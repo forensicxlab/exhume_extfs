@@ -1,6 +1,7 @@
-use crate::image::Image;
 use chrono::prelude::*;
-use exhume_partitions::part::VPartition;
+use exhume_body::Body;
+use exhume_partitions::mbr::MBRPartitionEntry;
+use prettytable::{Cell, Row, Table};
 use std::str;
 
 const EXT_MAGIC: u16 = 0xEF53;
@@ -25,10 +26,10 @@ enum Type {
     Ext2,
 }
 pub struct ExtFS<'a> {
-    partition: &'a mut VPartition,
+    start_byte_address: &'a usize,
     superblock: Superblock,
     fstype: Type,
-    evidence: &'a mut Image,
+    body: &'a mut Body,
 }
 struct ExtentLeaf {
     ee_block: u32,
@@ -147,9 +148,9 @@ impl ExtentLeaf {
 }
 
 impl Superblock {
-    fn new(evidence: &mut Image, partition_offset: &usize) -> Superblock {
-        evidence.seek(*partition_offset + 0x400);
-        let data: Vec<u8> = evidence.read(0x3FD);
+    fn new(body: &mut Body, partition_offset: &usize) -> Superblock {
+        body.seek(*partition_offset + 0x400);
+        let data: Vec<u8> = body.read(0x3FD);
 
         let s_blocks_count_lo = u32::from_le_bytes(data[0x4..0x8].try_into().unwrap()) as u64;
         let s_blocks_count_hi = u32::from_le_bytes(data[0x150..0x154].try_into().unwrap()) as u64;
@@ -178,33 +179,95 @@ impl Superblock {
     }
 
     fn print_sp_info(&self) {
-        println!("Magic: {:x}", self.s_magic);
-        println!("Total Inode count: {:?}", self.s_inodes_count);
-        println!("Total Block count : {:?}", self.s_blocks_count);
-        println!("Free inode count: {:?}", self.s_free_inodes_count);
-        println!("First data block: {:?}", self.s_first_data_block);
-        println!("Block size: {:?}", self.block_size());
-        println!("Block per group: {:?}", self.s_blocks_per_group);
-        println!("Inode per group: {:?}", self.s_inodes_per_group);
-        println!("Block group size: {:?}", self.block_group_size());
-        println!("Block group Count: {:?}", self.block_group_count());
+        let mut table = Table::new();
+        table.add_row(Row::new(vec![Cell::new("Property"), Cell::new("Value")]));
+        table.add_row(Row::new(vec![
+            Cell::new("Magic"),
+            Cell::new(&format!("{:x}", self.s_magic)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Total Inode count"),
+            Cell::new(&format!("{:?}", self.s_inodes_count)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Total Block count"),
+            Cell::new(&format!("{:?}", self.s_blocks_count)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Free inode count"),
+            Cell::new(&format!("{:?}", self.s_free_inodes_count)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("First data block"),
+            Cell::new(&format!("{:?}", self.s_first_data_block)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Block size"),
+            Cell::new(&format!("{:?}", self.block_size())),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Blocks per group"),
+            Cell::new(&format!("{:?}", self.s_blocks_per_group)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Inodes per group"),
+            Cell::new(&format!("{:?}", self.s_inodes_per_group)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Block group size"),
+            Cell::new(&format!("{:?}", self.block_group_size())),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Block group Count"),
+            Cell::new(&format!("{:?}", self.block_group_count())),
+        ]));
 
-        let mut dt = Utc.timestamp_opt(self.s_mtime.into(), 0).unwrap();
-        println!("Mount time: {:?}", dt.to_rfc2822());
-        dt = Utc.timestamp_opt(self.s_wtime.into(), 0).unwrap();
-        println!("Write time: {:?}", dt.to_rfc2822());
-        println!("Number of mounts : {:?}", self.s_mnt_count);
-        println!("First non-reserved inode : 0x{:x}", self.s_first_ino);
-        println!("Inode size in bytes : {:?}", self.s_inode_size);
-        println!(
-            "Block group # of this superblock : {:?}",
-            self.s_block_group_nr
-        );
-        println!("Volume name : {}", self.s_volume_name);
-        println!("Last mounted path : {}", self.s_last_mounted);
-        println!("Size of group descriptors : {:?}", self.s_desc_size);
+        let mount_time = Utc
+            .timestamp_opt(self.s_mtime.into(), 0)
+            .unwrap()
+            .to_rfc2822();
+        table.add_row(Row::new(vec![
+            Cell::new("Mount time"),
+            Cell::new(&mount_time),
+        ]));
+        let write_time = Utc
+            .timestamp_opt(self.s_wtime.into(), 0)
+            .unwrap()
+            .to_rfc2822();
+        table.add_row(Row::new(vec![
+            Cell::new("Write time"),
+            Cell::new(&write_time),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Number of mounts"),
+            Cell::new(&format!("{:?}", self.s_mnt_count)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("First non-reserved inode"),
+            Cell::new(&format!("0x{:x}", self.s_first_ino)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Inode size in bytes"),
+            Cell::new(&format!("{:?}", self.s_inode_size)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Block group # of this superblock"),
+            Cell::new(&format!("{:?}", self.s_block_group_nr)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Volume name"),
+            Cell::new(&self.s_volume_name),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Last mounted path"),
+            Cell::new(&self.s_last_mounted),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Size of group descriptors"),
+            Cell::new(&format!("{:?}", self.s_desc_size)),
+        ]));
 
-        println!("-----------------------------------------");
+        table.printstd();
     }
 
     fn block_size(&self) -> usize {
@@ -319,11 +382,8 @@ impl ExtentHeader {
 }
 
 impl ExtFS<'_> {
-    pub fn new<'a>(
-        evidence: &'a mut Image,
-        partition: &'a mut VPartition,
-    ) -> Result<ExtFS<'a>, String> {
-        let superblock = Superblock::new(evidence, &partition.get_first_byte());
+    pub fn new<'a>(body: &'a mut Body, start_byte_address: &'a usize) -> Result<ExtFS<'a>, String> {
+        let superblock = Superblock::new(body, start_byte_address);
         let fstype: Type;
         // Verify it is indeed an extfs.
         if superblock.s_magic != EXT_MAGIC {
@@ -349,17 +409,18 @@ impl ExtFS<'_> {
         }
 
         return Ok(ExtFS {
-            partition,
+            start_byte_address,
             superblock,
             fstype,
-            evidence,
+            body,
         });
     }
 
     fn bg_desc_offset(&self) -> usize {
         /* Get the group descriptor offset : | 1024 padding | superblock |.....| block group descriptors | ...
-        ^ - Here                   */
-        return self.partition.get_first_byte() + self.superblock.block_size();
+        _______________________________________________________________________^ - Here
+        */
+        return self.start_byte_address + self.superblock.block_size();
     }
 
     pub fn print_info(&self) {
@@ -367,8 +428,8 @@ impl ExtFS<'_> {
     }
 
     fn get_itable_offset(&mut self, bg_desc_offset: usize) -> usize {
-        self.evidence.seek(bg_desc_offset); // Seek to the right group descriptor.
-        let bg_desc = self.evidence.read(self.superblock.s_desc_size as usize);
+        self.body.seek(bg_desc_offset); // Seek to the right group descriptor.
+        let bg_desc = self.body.read(self.superblock.s_desc_size as usize);
 
         // Parsing the inode table offset.
         // TODO : check if the Ext is using 64bit.
@@ -394,18 +455,14 @@ impl ExtFS<'_> {
         // Parse the group descriptor and get the inode table offset.
         let inode_table_offset = self.get_itable_offset(bg_desc_offset);
 
-        let inode_offset = self.partition.get_first_byte()
+        let inode_offset = self.start_byte_address
             + inode_table_offset
             + inode_index * self.superblock.s_inode_size as usize;
-        self.evidence.seek(inode_offset);
+        self.body.seek(inode_offset);
 
-        let raw_inode = self.evidence.read(self.superblock.s_inode_size as usize);
+        let raw_inode = self.body.read(self.superblock.s_inode_size as usize);
         return Inode::new(&raw_inode);
     }
-
-    // pub fn test(&mut self){
-
-    // }
 
     pub fn build_system_tree(&mut self) {
         // STEP 1. Identify the root inode, which is inode #2.
@@ -418,8 +475,8 @@ impl ExtFS<'_> {
             let leaf = ExtentLeaf::new(&inode.i_block[0xC..0xC + 12].to_vec());
             let offset = leaf.ee_start * self.superblock.block_size();
             if inode.is_dir() {
-                self.evidence.seek(self.partition.get_first_byte() + offset);
-                let raw_entry = self.evidence.read(self.superblock.block_size() - 12);
+                self.body.seek(self.start_byte_address + offset);
+                let raw_entry = self.body.read(self.superblock.block_size() - 12);
                 let mut j = 0;
 
                 while j < raw_entry.len() {
