@@ -5,8 +5,20 @@ use clap_num::maybe_hex;
 use exhume_body::Body;
 use extfs::ExtFS;
 
-fn process_extfs(body: &mut Body, offset: &usize, verbose: &bool) {
-    let filesystem = match ExtFS::new(body, offset) {
+fn process_partition(
+    file_path: &str,
+    format: &str,
+    offset: &usize,
+    superblock: &bool,
+    inode_number: &usize,
+    verbose: &bool,
+) {
+    let mut body = Body::new(file_path.to_string(), format);
+    if *verbose {
+        body.print_info();
+    }
+
+    let mut filesystem = match ExtFS::new(&mut body, offset) {
         Ok(fs) => Some(fs),
         Err(message) => {
             eprintln!("ExtFS object creation error: {:?}", message);
@@ -14,45 +26,32 @@ fn process_extfs(body: &mut Body, offset: &usize, verbose: &bool) {
         }
     };
 
-    if let Some(fs) = &filesystem {
+    if let Some(fs) = &mut filesystem {
         if *verbose {
             println!("ExtFS created successfully.");
         }
-        fs.print_info();
-    }
-}
-
-fn process_partition(file_path: &str, format: &str, fstype: &str, offset: &usize, verbose: &bool) {
-    let mut body = Body::new(file_path.to_string(), format);
-    if *verbose {
-        body.print_info();
-    }
-
-    match fstype {
-        "extfs" => {
-            if *verbose {
-                println!("Parsing the partition as the Extended File System format");
-            }
-            process_extfs(&mut body, offset, verbose);
+        if *superblock {
+            fs.print_superblock_metadata();
         }
-        _ => {
-            eprintln!("The filesystem type to parse isn't supported. Supported formats is 'extfs'")
+
+        if *inode_number > 0 {
+            fs.build_system_tree();
         }
     }
 }
 
 fn main() {
-    let matches = Command::new("exhume_metadata")
+    let matches = Command::new("exhume_extfs")
         .version("1.0")
         .author("ForensicXlab")
-        .about("Exhume the metadata from a given partition.")
+        .about("Exhume the metadata from an extfs partition.")
         .arg(
-            Arg::new("input")
-                .short('i')
-                .long("input")
+            Arg::new("body")
+                .short('b')
+                .long("body")
                 .value_parser(clap::value_parser!(String))
                 .required(true)
-                .help("The path to the input file."),
+                .help("The path to the body to exhume."),
         )
         .arg(
             Arg::new("format")
@@ -68,20 +67,20 @@ fn main() {
                 .long("offset")
                 .value_parser(maybe_hex::<usize>)
                 .required(true)
-                .help("Extract the metadata for the partition at the start address X"),
+                .help("The extfs partition starts at address 0x...."),
         )
         .arg(
-            Arg::new("fstype")
-                .short('t')
-                .long("fstype")
-                .value_parser(clap::value_parser!(String))
-                .required(true)
-                .help("The filesystem type. Currently supported: extfs"),
+            Arg::new("inode")
+                .short('i')
+                .long("inode")
+                .value_parser(maybe_hex::<usize>)
+                .required(false)
+                .help("Get the metadata about a specific inode number (must be >= 2)."),
         )
         .arg(
-            Arg::new("verbose")
-                .short('v')
-                .long("verbose")
+            Arg::new("superblock")
+                .short('s')
+                .long("superblock")
                 .action(ArgAction::SetTrue),
         )
         .arg(
@@ -92,13 +91,21 @@ fn main() {
         )
         .get_matches();
 
-    let file_path = matches.get_one::<String>("input").unwrap();
+    let file_path = matches.get_one::<String>("body").unwrap();
     let format = matches.get_one::<String>("format").unwrap();
-    let fstype = matches.get_one::<String>("fstype").unwrap();
     let offset = matches.get_one::<usize>("offset").unwrap();
     let verbose = match matches.get_one::<bool>("verbose") {
         Some(verbose) => verbose,
         None => &false,
     };
-    process_partition(file_path, format, fstype, offset, verbose);
+    let superblock = match matches.get_one::<bool>("superblock") {
+        Some(superblock) => superblock,
+        None => &false,
+    };
+    let inode = match matches.get_one::<usize>("inode") {
+        Some(inode) => inode,
+        None => &0usize,
+    };
+
+    process_partition(file_path, format, offset, superblock, inode, verbose);
 }

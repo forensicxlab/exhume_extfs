@@ -1,7 +1,8 @@
 use chrono::prelude::*;
 use exhume_body::Body;
-use exhume_partitions::mbr::MBRPartitionEntry;
+use prettytable::format;
 use prettytable::{Cell, Row, Table};
+
 use std::str;
 
 const EXT_MAGIC: u16 = 0xEF53;
@@ -180,7 +181,9 @@ impl Superblock {
 
     fn print_sp_info(&self) {
         let mut table = Table::new();
-        table.add_row(Row::new(vec![Cell::new("Property"), Cell::new("Value")]));
+        table.set_format(*format::consts::FORMAT_NO_LINESEP_WITH_TITLE);
+        table.set_titles(Row::new(vec![Cell::new("Property"), Cell::new("Value")]));
+
         table.add_row(Row::new(vec![
             Cell::new("Magic"),
             Cell::new(&format!("{:x}", self.s_magic)),
@@ -319,40 +322,67 @@ impl Inode {
         return (self.i_mode & 0x4000) != 0;
     }
 
-    fn print_info(&self) {
+    pub fn print_info(&self) {
         let atime = Utc.timestamp_opt(self.i_atime.into(), self.i_atime_extra);
         let ctime = Utc.timestamp_opt(self.i_ctime.into(), self.i_ctime_extra);
         let mtime = Utc.timestamp_opt(self.i_mtime.into(), self.i_mtime_extra);
         let dtime = Utc.timestamp_opt(self.i_dtime.into(), 0);
         let crtime = Utc.timestamp_opt(self.i_crtime.into(), self.i_crtime_extra);
 
-        println!(
-            "---------INODE---------
-        Mode {:x}
-        UUID : {:?}
-        Size : {:?}
-        File creation time: {:?}
-        Last access time: {:?}
-        Last data modification time : {:?}
-        Deletion time {:?}
-        Gid : {:?}
-        Link count : {:?}
-        Flags : {:?}
-        Generation : {:?}
-        Version : {:?}",
-            self.i_mode,
-            self.i_uid,
-            self.i_size,
-            crtime,
-            atime,
-            mtime,
-            dtime,
-            self.i_gid,
-            self.i_links_count,
-            self.i_flags,
-            self.i_generation,
-            self.i_version_hi
-        );
+        let mut table = Table::new();
+        table.set_format(*format::consts::FORMAT_NO_LINESEP_WITH_TITLE);
+        table.set_titles(Row::new(vec![Cell::new("Property"), Cell::new("Value")]));
+
+        table.add_row(Row::new(vec![
+            Cell::new("Mode"),
+            Cell::new(&format!("0x{:x}", self.i_mode)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("UUID"),
+            Cell::new(&format!("{:?}", self.i_uid)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Size"),
+            Cell::new(&format!("{:?}", self.i_size)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("File creation time"),
+            Cell::new(&format!("{:?}", crtime)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Last access time"),
+            Cell::new(&format!("{:?}", atime)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Last data modification time"),
+            Cell::new(&format!("{:?}", mtime)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Deletion time"),
+            Cell::new(&format!("{:?}", dtime)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Gid"),
+            Cell::new(&format!("{:?}", self.i_gid)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Link count"),
+            Cell::new(&format!("{:?}", self.i_links_count)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Flags"),
+            Cell::new(&format!("0x{:x}", self.i_flags)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Generation"),
+            Cell::new(&format!("{:?}", self.i_generation)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Version"),
+            Cell::new(&format!("{:?}", self.i_version_hi)),
+        ]));
+
+        table.printstd();
     }
 }
 
@@ -423,7 +453,7 @@ impl ExtFS<'_> {
         return self.start_byte_address + self.superblock.block_size();
     }
 
-    pub fn print_info(&self) {
+    pub fn print_superblock_metadata(&self) {
         self.superblock.print_sp_info();
     }
 
