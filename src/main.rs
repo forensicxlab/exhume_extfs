@@ -11,6 +11,7 @@ fn process_partition(
     offset: &usize,
     superblock: &bool,
     inode_number: &usize,
+    tree: &bool,
     verbose: &bool,
 ) {
     let mut body = Body::new(file_path.to_string(), format);
@@ -31,11 +32,28 @@ fn process_partition(
             println!("ExtFS created successfully.");
         }
         if *superblock {
-            fs.print_superblock_metadata();
+            //fs.print_superblock_metadata();
         }
 
         if *inode_number > 0 {
-            fs.build_system_tree();
+            match fs.load_group_descriptors() {
+                Ok(_) => println!("Success"),
+                Err(_) => eprintln!("Error"),
+            };
+            let inode = match fs.get_inode(*inode_number as u32) {
+                Ok(inode) => inode,
+                Err(err) => {
+                    eprintln!("Error: {}", err);
+                    std::process::exit(1);
+                }
+            };
+
+            println!("{:?}", inode.is_dir())
+        }
+
+        if *tree {
+            println!("Building stree");
+            //fs.build_system_tree();
         }
     }
 }
@@ -81,7 +99,15 @@ fn main() {
             Arg::new("superblock")
                 .short('s')
                 .long("superblock")
-                .action(ArgAction::SetTrue),
+                .action(ArgAction::SetTrue)
+                .help("Display the superblock information."),
+        )
+        .arg(
+            Arg::new("tree")
+                .short('t')
+                .long("tree")
+                .action(ArgAction::SetTrue)
+                .help("Display the whole inode system tree."),
         )
         .arg(
             Arg::new("verbose")
@@ -102,10 +128,14 @@ fn main() {
         Some(superblock) => superblock,
         None => &false,
     };
+    let tree = match matches.get_one::<bool>("tree") {
+        Some(tree) => tree,
+        None => &false,
+    };
     let inode = match matches.get_one::<usize>("inode") {
         Some(inode) => inode,
         None => &0usize,
     };
 
-    process_partition(file_path, format, offset, superblock, inode, verbose);
+    process_partition(file_path, format, offset, superblock, inode, tree, verbose);
 }
