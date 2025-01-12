@@ -1,21 +1,14 @@
+use serde_json::{json, Value};
+
 #[derive(Debug)]
 pub struct GroupDescriptor {
-    /// Full 64-bit block number for the block bitmap.
-    pub bg_block_bitmap: u64,
-    /// Full 64-bit block number for the inode bitmap.
-    pub bg_inode_bitmap: u64,
-    /// Full 64-bit block number for the inode table.
-    pub bg_inode_table: u64,
-
-    /// Lower 16 bits of free blocks count (plus optional upper bits).
-    pub bg_free_blocks_count: u32,
-    /// Lower 16 bits of free inodes count (plus optional upper bits).
-    pub bg_free_inodes_count: u32,
-    /// Lower 16 bits of used directories count (plus optional upper bits).
-    pub bg_used_dirs_count: u32,
-
-    /// Flags (lower 16 bits from older layout).
-    pub bg_flags: u16,
+    bg_block_bitmap: u64,      // Full 64-bit block number for the block bitmap.
+    bg_inode_bitmap: u64,      // Full 64-bit block number for the inode bitmap.
+    bg_inode_table: u64,       // Full 64-bit block number for the inode table.
+    bg_free_blocks_count: u32, // Lower 16 bits of free blocks count (plus optional upper bits).
+    bg_free_inodes_count: u32, // Lower 16 bits of free inodes count (plus optional upper bits).
+    bg_used_dirs_count: u32, // Lower 16 bits of used directories count (plus optional upper bits).
+    bg_flags: u16,           // Flags (lower 16 bits from older layout).
 }
 
 impl GroupDescriptor {
@@ -87,16 +80,29 @@ impl GroupDescriptor {
             bg_block_bitmap,
             bg_inode_bitmap,
             bg_inode_table,
-
             bg_free_blocks_count,
             bg_free_inodes_count,
             bg_used_dirs_count,
-
             bg_flags,
         }
     }
 
     pub fn bg_inode_table(&self) -> u64 {
         self.bg_inode_table
+    }
+
+    /// The to_json method.
+    /// All of the exhume modules have a 'to_json' method in order to be used by
+    /// external applications (see Thanatology for example)
+    pub fn to_json(&self) -> Value {
+        json!({
+            "block_bitmap": self.bg_block_bitmap,
+            "inode_bitmap": self.bg_inode_bitmap,
+            "inode_table": self.bg_inode_table,
+            "free_blocks_count": self.bg_free_blocks_count,
+            "free_inodes_count": self.bg_free_inodes_count,
+            "used_dirs_count": self.bg_used_dirs_count,
+            "flags": self.bg_flags,
+        })
     }
 }

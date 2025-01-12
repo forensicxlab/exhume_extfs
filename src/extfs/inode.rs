@@ -1,4 +1,5 @@
 /// Reference: https://www.kernel.org/doc/html/latest/filesystems/ext4/index.html
+use serde_json::{json, Value};
 
 #[derive(Debug)]
 pub struct Inode {
@@ -13,18 +14,15 @@ pub struct Inode {
     i_links_count: u16,
     i_blocks_lo: u32,
     i_flags: u32,
-    l_i_version: u32,
     i_block: [u32; 15],
     i_generation: u32,
     i_file_acl_lo: u32,
     i_size_high: u32,
-    i_obso_faddr: u32,
     l_i_blocks_high: u16,
     l_i_file_acl_high: u16,
     l_i_uid_high: u16,
     l_i_gid_high: u16,
     l_i_checksum_lo: u16,
-    l_i_reserved: u16,
     i_extra_isize: u16,
     i_checksum_hi: u16,
     i_ctime_extra: u32,
@@ -32,7 +30,6 @@ pub struct Inode {
     i_atime_extra: u32,
     i_crtime: u32,
     i_crtime_extra: u32,
-    i_version_hi: u32,
     i_projid: u32,
 }
 
@@ -62,7 +59,6 @@ impl Inode {
         let i_links_cnt = le_u16(0x1A);
         let i_blocks_lo = le_u32(0x1C);
         let i_flags = le_u32(0x20);
-        let l_i_version = le_u32(0x24);
 
         let mut i_block = [0u32; 15];
         for i in 0..15 {
@@ -70,17 +66,14 @@ impl Inode {
         }
 
         // Some fields exist after offset 128 only if inode_size >= 256 (ext4)
-        // We'll define defaults if they aren't present
         let i_generation = if inode_size >= 256 { le_u32(0x64) } else { 0 };
         let i_file_acl_lo = if inode_size >= 256 { le_u32(0x68) } else { 0 };
         let i_size_high = if inode_size >= 256 { le_u32(0x6C) } else { 0 };
-        let i_obso_faddr = if inode_size >= 256 { le_u32(0x70) } else { 0 };
         let l_i_blocks_high = if inode_size >= 256 { le_u16(0x74) } else { 0 };
         let l_i_file_acl_high = if inode_size >= 256 { le_u16(0x76) } else { 0 };
         let l_i_uid_high = if inode_size >= 256 { le_u16(0x78) } else { 0 };
         let l_i_gid_high = if inode_size >= 256 { le_u16(0x7A) } else { 0 };
         let l_i_checksum_lo = if inode_size >= 256 { le_u16(0x7C) } else { 0 };
-        let l_i_reserved = if inode_size >= 256 { le_u16(0x7E) } else { 0 };
         let i_extra_isize = if inode_size >= 256 { le_u16(0x80) } else { 0 };
         let i_checksum_hi = if inode_size >= 256 { le_u16(0x82) } else { 0 };
         let i_ctime_extra = if inode_size >= 256 { le_u32(0x84) } else { 0 };
@@ -88,7 +81,6 @@ impl Inode {
         let i_atime_extra = if inode_size >= 256 { le_u32(0x8C) } else { 0 };
         let i_crtime = if inode_size >= 256 { le_u32(0x90) } else { 0 };
         let i_crtime_extra = if inode_size >= 256 { le_u32(0x94) } else { 0 };
-        let i_version_hi = if inode_size >= 256 { le_u32(0x98) } else { 0 };
         let i_projid = if inode_size >= 256 { le_u32(0x9C) } else { 0 };
 
         // Construct the inode.
@@ -104,18 +96,15 @@ impl Inode {
             i_links_count: i_links_cnt,
             i_blocks_lo,
             i_flags,
-            l_i_version,
             i_block,
             i_generation,
             i_file_acl_lo,
             i_size_high,
-            i_obso_faddr,
             l_i_blocks_high,
             l_i_file_acl_high,
             l_i_uid_high,
             l_i_gid_high,
             l_i_checksum_lo,
-            l_i_reserved,
             i_extra_isize,
             i_checksum_hi,
             i_ctime_extra,
@@ -123,7 +112,6 @@ impl Inode {
             i_atime_extra,
             i_crtime,
             i_crtime_extra,
-            i_version_hi,
             i_projid,
         }
     }
@@ -176,5 +164,57 @@ impl Inode {
     /// Return the effective GID, combining low/high bits.
     pub fn gid(&self) -> u32 {
         ((self.l_i_gid_high as u32) << 16) | (self.i_gid as u32)
+    }
+
+    /// Combined 32-bit checksum (l_i_checksum_lo + i_checksum_hi)
+    /// The "low" part is 16 bits, and the "high" part is another 16 bits.
+    pub fn checksum(&self) -> u32 {
+        ((self.i_checksum_hi as u32) << 16) | (self.l_i_checksum_lo as u32)
+    }
+
+    /// Combined 48-bit file ACL (i_file_acl_lo + l_i_file_acl_high).
+    /// The `i_file_acl_lo` is 32 bits, and `l_i_file_acl_high` is 16 bits.
+    /// You can store them in a u64 for convenience.
+    pub fn file_acl(&self) -> u64 {
+        ((self.l_i_file_acl_high as u64) << 32) | (self.i_file_acl_lo as u64)
+    }
+
+    /// The to_json method.
+    /// All of the exhume modules have a 'to_json' method in order to be used by
+    /// external applications (see Thanatology for example)
+    pub fn to_json(&self) -> Value {
+        json!({
+            // Example of "raw" fields you might still want:
+            "mode": self.i_mode,
+            // Timestamps (raw), to be interpreted by external tools:
+            "atime": self.i_atime,
+            "ctime": self.i_ctime,
+            "mtime": self.i_mtime,
+            "dtime": self.i_dtime,
+            "links_count": self.i_links_count,
+            "flags": self.i_flags,
+            "block_pointers": self.block_pointers(),
+            "generation": self.i_generation,
+            "extra_isize": self.i_extra_isize,
+            "ctime_extra": self.i_ctime_extra,
+            "mtime_extra": self.i_mtime_extra,
+            "atime_extra": self.i_atime_extra,
+            "crtime": self.i_crtime,
+            "crtime_extra": self.i_crtime_extra,
+            "projid": self.i_projid,
+
+            // --- Combined fields ---
+            "uid": self.uid(),
+            "gid": self.gid(),
+            "size": self.size(),
+            "blocks": self.block_count(),
+            "checksum": self.checksum(),
+            "file_acl": self.file_acl(),
+
+            // --- Booleans derived from i_mode ---
+            "is_dir": self.is_dir(),
+            "is_regular_file": self.is_regular_file(),
+            "is_symlink": self.is_symlink(),
+        })
     }
 }

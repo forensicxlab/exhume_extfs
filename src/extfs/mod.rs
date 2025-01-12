@@ -1,13 +1,9 @@
 mod groupdescriptor;
 mod inode;
 mod superblock;
-
-use chrono::prelude::*;
 use exhume_body::Body;
 use groupdescriptor::GroupDescriptor;
 use inode::Inode;
-use prettytable::format;
-use prettytable::{Cell, Row, Table};
 use std::str;
 use superblock::Superblock;
 const INCOMPAT_FILETYPE: u32 = 0x2;
@@ -25,7 +21,7 @@ enum _FileType {
 
 pub struct ExtFS<'a> {
     start_byte_address: &'a usize,
-    superblock: Superblock,
+    pub superblock: Superblock,
     body: &'a mut Body,
     group_descriptors: Option<Vec<GroupDescriptor>>,
 }
@@ -132,7 +128,9 @@ impl ExtentHeader {
 
 impl<'a> ExtFS<'a> {
     pub fn new(body: &'a mut Body, start_byte_address: &'a usize) -> Result<ExtFS<'a>, String> {
-        let superblock = match Superblock::new(body, start_byte_address) {
+        body.seek(*start_byte_address + 0x400);
+
+        let superblock = match Superblock::from_bytes(&body.read(0x400)) {
             Ok(superblock) => superblock,
             Err(message) => {
                 eprintln!("{:?}", message);
@@ -140,7 +138,6 @@ impl<'a> ExtFS<'a> {
             }
         };
 
-        // We don't parse group descriptors yet; that can happen later.
         Ok(ExtFS {
             start_byte_address,
             superblock,
@@ -149,13 +146,14 @@ impl<'a> ExtFS<'a> {
         })
     }
 
+    /// Get the Block Group descriptor address in the given body of data
+    /// | 1024 padding | superblock |.....| block group descriptors | ...
+    ///___________________________________^ - Here
     fn bg_desc_offset(&self) -> usize {
-        /* Get the group descriptor offset : | 1024 padding | superblock |.....| block group descriptors | ...
-        _______________________________________________________________________^ - Here
-        */
         return self.start_byte_address + 1024 + self.superblock.block_size(); // address of the partition + 1024 padding + 1 block = The address of the block group descriptors.
     }
 
+    /// Load all of the group descriptors into an existing Extfs struct
     pub fn load_group_descriptors(&mut self) -> Result<(), String> {
         // Calculate fundamental parameters
         let block_size = self.superblock.block_size() as u64;
@@ -191,6 +189,15 @@ impl<'a> ExtFS<'a> {
         Ok(())
     }
 
+    /// Retrive all of the block descriptors
+    pub fn get_bg_descriptors(&self) -> Result<&Vec<GroupDescriptor>, String> {
+        let group_descs = match &self.group_descriptors {
+            Some(gds) => Ok(gds),
+            None => Err("Group descriptors are not loaded.".to_string()),
+        };
+        group_descs
+    }
+
     /// Retrieve the inode with the given `inode_num`.
     ///
     /// - Finds which block group this inode belongs to.
@@ -215,17 +222,15 @@ impl<'a> ExtFS<'a> {
 
         // The group descriptor for that block group
         let gd = &group_descs[block_group as usize];
-        println!("The inode is in the following  {:#?}", gd);
+
         // The inode table starts at block `bg_inode_table_lo` (old layout).
         // For 64-bit capable layouts, you may need `bg_inode_table_hi` as well.
         let inode_table_start_block = gd.bg_inode_table();
 
-        println!("inode_table_start_block  0x{:x}", inode_table_start_block);
-
         // Byte offset into inode table for our specific inode:
         let inode_byte_offset = (index_within_group as u64) * inode_size;
 
-        println!("inode_byte_offset  0x{:x}", inode_byte_offset);
+        // println!("inode_byte_offset  0x{:x}", inode_byte_offset);
 
         // The global byte offset in the filesystem image:
         //   = start of partition
@@ -235,16 +240,16 @@ impl<'a> ExtFS<'a> {
             + (inode_table_start_block * block_size)
             + inode_byte_offset;
 
-        println!("global_byte_offset  0x{:x}", global_byte_offset);
+        // println!("global_byte_offset  0x{:x}", global_byte_offset);
 
         // Now read the inode bytes
         self.body.seek(global_byte_offset as usize);
-        println!("Inode size:{:?}", inode_size);
+        // println!("Inode size:{:?}", inode_size);
         let inode_buf = self.body.read(inode_size as usize);
-        println!("{:?}", inode_buf);
+        // println!("{:?}", inode_buf);
         // Parse the inode structure
         let inode = Inode::from_bytes(&inode_buf, inode_size);
-        println!("{:#?}", inode);
+        // println!("{:#?}", inode);
         Ok(inode)
     }
 }

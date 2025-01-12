@@ -11,7 +11,8 @@ fn process_partition(
     offset: &usize,
     superblock: &bool,
     inode_number: &usize,
-    tree: &bool,
+    groupdesc: &bool,
+    json: &bool,
     verbose: &bool,
 ) {
     let mut body = Body::new(file_path.to_string(), format);
@@ -32,12 +33,12 @@ fn process_partition(
             println!("ExtFS created successfully.");
         }
         if *superblock {
-            //fs.print_superblock_metadata();
+            fs.superblock.print_sp_info();
         }
 
         if *inode_number > 0 {
             match fs.load_group_descriptors() {
-                Ok(_) => println!("Success"),
+                Ok(_) => {}
                 Err(_) => eprintln!("Error"),
             };
             let inode = match fs.get_inode(*inode_number as u32) {
@@ -47,13 +48,37 @@ fn process_partition(
                     std::process::exit(1);
                 }
             };
-
-            println!("{:?}", inode.is_dir())
+            if *json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&inode.to_json()).unwrap()
+                );
+            } else {
+                println!("Display the prettytable here");
+            }
         }
 
-        if *tree {
-            println!("Building stree");
-            //fs.build_system_tree();
+        if *groupdesc {
+            match fs.load_group_descriptors() {
+                Ok(_) => {
+                    if *json {
+                        let json_array: Vec<_> = fs
+                            .get_bg_descriptors()
+                            .unwrap()
+                            .iter()
+                            .map(|group_descriptor| group_descriptor.to_json())
+                            .collect();
+
+                        println!("{}", serde_json::to_string_pretty(&json_array).unwrap());
+                    } else {
+                        println!("Display the prettytable here");
+                    }
+                }
+                Err(err) => {
+                    eprintln!("{}", err);
+                    std::process::exit(1);
+                }
+            }
         }
     }
 }
@@ -103,16 +128,22 @@ fn main() {
                 .help("Display the superblock information."),
         )
         .arg(
-            Arg::new("tree")
-                .short('t')
-                .long("tree")
+            Arg::new("groupdesc")
+                .short('g')
+                .long("groupdesc")
                 .action(ArgAction::SetTrue)
-                .help("Display the whole inode system tree."),
+                .help("Display the group descriptors"),
         )
         .arg(
             Arg::new("verbose")
                 .short('v')
                 .long("verbose")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("json")
+                .short('j')
+                .long("json")
                 .action(ArgAction::SetTrue),
         )
         .get_matches();
@@ -128,14 +159,20 @@ fn main() {
         Some(superblock) => superblock,
         None => &false,
     };
-    let tree = match matches.get_one::<bool>("tree") {
-        Some(tree) => tree,
+    let groupdesc = match matches.get_one::<bool>("groupdesc") {
+        Some(groupdesc) => groupdesc,
         None => &false,
     };
     let inode = match matches.get_one::<usize>("inode") {
         Some(inode) => inode,
         None => &0usize,
     };
+    let json = match matches.get_one::<bool>("json") {
+        Some(json) => json,
+        None => &false,
+    };
 
-    process_partition(file_path, format, offset, superblock, inode, tree, verbose);
+    process_partition(
+        file_path, format, offset, superblock, inode, groupdesc, json, verbose,
+    );
 }
