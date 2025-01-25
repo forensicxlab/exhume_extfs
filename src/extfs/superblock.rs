@@ -1,5 +1,4 @@
 /// Reference: https://www.kernel.org/doc/html/v4.19/filesystems/ext4/ondisk/index.html#super-block
-use exhume_body::Body;
 use std::convert::TryInto;
 
 const EXT_MAGIC: u16 = 0xEF53;
@@ -233,7 +232,7 @@ impl Superblock {
         (self.s_feature_incompat & EXT4_FEATURE_INCOMPAT_64BIT) != 0
     }
 
-    pub fn block_size(&self) -> usize {
+    pub fn block_size(&self) -> u64 {
         1024 << self.s_log_block_size
     }
 

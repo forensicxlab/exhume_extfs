@@ -8,7 +8,7 @@ use extfs::ExtFS;
 fn process_partition(
     file_path: &str,
     format: &str,
-    offset: &usize,
+    offset: &u64,
     superblock: &bool,
     inode_number: &usize,
     groupdesc: &bool,
@@ -23,7 +23,7 @@ fn process_partition(
     let mut filesystem = match ExtFS::new(&mut body, offset) {
         Ok(fs) => Some(fs),
         Err(message) => {
-            eprintln!("ExtFS object creation error: {:?}", message);
+            eprintln!("ExtFS object creation error: {}", message);
             None
         }
     };
@@ -39,15 +39,34 @@ fn process_partition(
         if *inode_number > 0 {
             match fs.load_group_descriptors() {
                 Ok(_) => {}
-                Err(_) => eprintln!("Error"),
+                Err(err) => eprintln!("{}", err),
             };
             let inode = match fs.get_inode(*inode_number as u32) {
                 Ok(inode) => inode,
                 Err(err) => {
-                    eprintln!("Error: {}", err);
+                    eprintln!("{}", err);
                     std::process::exit(1);
                 }
             };
+
+            // let test = match fs.read(*inode_number as u32) {
+            //     Ok(test) => test,
+            //     Err(err) => {
+            //         eprintln!("{}", err);
+            //         std::process::exit(1);
+            //     }
+            // };
+            // println!("{:?}", String::from_utf8_lossy(&test));
+            //
+
+            let file = match fs.read_file("/abi-3.13.0-24-generic") {
+                Ok(file) => file,
+                Err(err) => {
+                    eprintln!("{}", err);
+                    std::process::exit(1);
+                }
+            };
+            println!("{:?}", file);
             if *json {
                 println!(
                     "{}",
@@ -108,7 +127,7 @@ fn main() {
             Arg::new("offset")
                 .short('o')
                 .long("offset")
-                .value_parser(maybe_hex::<usize>)
+                .value_parser(maybe_hex::<u64>)
                 .required(true)
                 .help("The extfs partition starts at address 0x...."),
         )
@@ -150,7 +169,7 @@ fn main() {
 
     let file_path = matches.get_one::<String>("body").unwrap();
     let format = matches.get_one::<String>("format").unwrap();
-    let offset = matches.get_one::<usize>("offset").unwrap();
+    let offset = matches.get_one::<u64>("offset").unwrap();
     let verbose = match matches.get_one::<bool>("verbose") {
         Some(verbose) => verbose,
         None => &false,

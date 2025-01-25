@@ -122,6 +122,16 @@ impl Inode {
         ((self.i_size_high as u64) << 32) | (self.i_size_lo as u64)
     }
 
+    /// Returns the i_mode
+    pub fn mode(&self) -> u16 {
+        self.i_mode
+    }
+
+    /// Returns the i_flag
+    pub fn flag(&self) -> u32 {
+        self.i_flags
+    }
+
     /// Check if this inode is a directory (S_IFDIR).
     ///
     /// Note: In Linux, the directory bit is 0o40000 (or `S_IFDIR` = 0x4000 in hex).
