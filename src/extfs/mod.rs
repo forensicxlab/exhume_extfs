@@ -1,13 +1,15 @@
+use std::error::Error;
+use std::io::{Read, Seek, SeekFrom};
+use std::str;
+
 mod groupdescriptor;
 mod inode;
 mod superblock;
-use exhume_body::Body;
-use std::error::Error;
 
 use groupdescriptor::GroupDescriptor;
 use inode::Inode;
-use std::str;
 use superblock::Superblock;
+
 const INCOMPAT_FILETYPE: u32 = 0x2;
 
 enum FileType {
@@ -48,10 +50,10 @@ impl ExtentIndex {
     }
 }
 
-pub struct ExtFS<'a> {
-    start_byte_address: &'a u64,
+pub struct ExtFS<T: Read + Seek> {
+    start_byte_address: u64,
     pub superblock: Superblock,
-    body: &'a mut Body,
+    body: T,
     group_descriptors: Option<Vec<GroupDescriptor>>,
 }
 
@@ -155,12 +157,17 @@ impl ExtentHeader {
     }
 }
 
-impl<'a> ExtFS<'a> {
-    pub fn new(body: &'a mut Body, start_byte_address: &'a u64) -> Result<ExtFS<'a>, String> {
-        body.seek(*start_byte_address + 0x400);
+impl<T: Read + Seek> ExtFS<T> {
+    /// Create a new ExtFS instance given any type that implements `Read` and `Seek`
+    pub fn new(mut body: T, start_byte_address: u64) -> Result<Self, String> {
+        // Seek to the superblock location (1024 bytes of padding + 0x400)
+        body.seek(SeekFrom::Start(start_byte_address + 0x400))
+            .map_err(|e| e.to_string())?;
+        let mut sp_data = vec![0u8; 0x400];
+        body.read_exact(&mut sp_data).map_err(|e| e.to_string())?;
 
-        let superblock = match Superblock::from_bytes(&body.read(0x400)) {
-            Ok(superblock) => superblock,
+        let superblock = match Superblock::from_bytes(&sp_data) {
+            Ok(sb) => sb,
             Err(message) => {
                 eprintln!("{:?}", message);
                 std::process::exit(1);
@@ -179,32 +186,28 @@ impl<'a> ExtFS<'a> {
     /// | 1024 padding | superblock |.....| block group descriptors | ...
     ///___________________________________^ - Here
     fn bg_desc_offset(&self) -> u64 {
-        return self.start_byte_address + 1024 + self.superblock.block_size();
-        // address of the partition + 1024 padding + 1 block = The address of the block group descriptors.
+        self.start_byte_address + 1024 + self.superblock.block_size()
     }
 
-    /// Load all of the group descriptors into an existing Extfs struct
+    /// Load all of the group descriptors into an existing ExtFS struct
     pub fn load_group_descriptors(&mut self) -> Result<(), String> {
-        // Calculate fundamental parameters
         let block_size = self.superblock.block_size();
         let blocks_count = self.superblock.blocks_count();
         let blocks_per_group = self.superblock.blocks_per_group();
 
-        // Number of groups in the filesystem
         let num_groups = (blocks_count + (blocks_per_group - 1)) / blocks_per_group;
-
-        // Each older-style group descriptor is 32 bytes.
-        // The table might span multiple blocks if there are many groups.
         let gd_size = if self.superblock.is_64bit() { 64 } else { 32 };
         let total_gd_bytes = (num_groups as usize) * gd_size;
         let blocks_needed = (total_gd_bytes + (block_size as usize - 1)) / block_size as usize;
 
-        // Seek in your Body to the start of the group descriptor table
-        self.body.seek(self.bg_desc_offset());
-        // Read all the descriptor data
-        let buffer = self.body.read(blocks_needed * block_size as usize);
+        self.body
+            .seek(SeekFrom::Start(self.bg_desc_offset()))
+            .map_err(|e| e.to_string())?;
+        let mut buffer = vec![0u8; blocks_needed * block_size as usize];
+        self.body
+            .read_exact(&mut buffer)
+            .map_err(|e| e.to_string())?;
 
-        // Now parse each group descriptor
         let mut group_descs = Vec::with_capacity(num_groups as usize);
         for i in 0..num_groups {
             let offset = (i as usize) * gd_size;
@@ -212,72 +215,47 @@ impl<'a> ExtFS<'a> {
             let gd = GroupDescriptor::from_bytes(chunk, self.superblock.is_64bit());
             group_descs.push(gd);
         }
-
-        // Store them in the ExtFS struct
         self.group_descriptors = Some(group_descs);
         Ok(())
     }
 
-    /// Retrive all of the block descriptors
+    /// Retrieve all of the block group descriptors.
     pub fn get_bg_descriptors(&self) -> Result<&Vec<GroupDescriptor>, String> {
-        let group_descs = match &self.group_descriptors {
+        match &self.group_descriptors {
             Some(gds) => Ok(gds),
             None => Err("Group descriptors are not loaded.".to_string()),
-        };
-        group_descs
+        }
     }
 
     /// Retrieve the inode with the given `inode_num`.
-    ///
-    /// - Finds which block group this inode belongs to.
-    /// - Determines the offset in the inode table.
-    /// - Seeks in the `Body` to that offset and reads the raw inode bytes.
-    /// - Parses them with `Inode::from_bytes`.
     pub fn get_inode(&mut self, inode_num: u32) -> Result<Inode, String> {
-        // Ensure group descriptors are loaded
-        let group_descs = match &self.group_descriptors {
-            Some(gds) => gds,
-            None => return Err("Group descriptors are not loaded.".to_string()),
-        };
+        let group_descs = self
+            .group_descriptors
+            .as_ref()
+            .ok_or_else(|| "Group descriptors are not loaded.".to_string())?;
 
         let inodes_per_group = self.superblock.inodes_per_group() as u32;
-        let inode_size = self.superblock.inode_size() as u64; // e.g. 128 or 256
+        let inode_size = self.superblock.inode_size() as u64;
         let block_size = self.superblock.block_size() as u64;
 
-        // Which block group?
-        // In ext4, inodes are numbered starting at 1, so offset by -1
         let block_group = (inode_num - 1) / inodes_per_group;
         let index_within_group = (inode_num - 1) % inodes_per_group;
-
-        // The group descriptor for that block group
         let gd = &group_descs[block_group as usize];
 
-        // The inode table starts at block `bg_inode_table_lo` (old layout).
-        // For 64-bit capable layouts, you may need `bg_inode_table_hi` as well.
         let inode_table_start_block = gd.bg_inode_table();
-
-        // Byte offset into inode table for our specific inode:
         let inode_byte_offset = (index_within_group as u64) * inode_size;
-
-        // println!("inode_byte_offset  0x{:x}", inode_byte_offset);
-
-        // The global byte offset in the filesystem image:
-        //   = start of partition
-        //   + (inode_table_start_block * block_size)
-        //   + inode_byte_offset
         let global_byte_offset =
-            (*self.start_byte_address) + (inode_table_start_block * block_size) + inode_byte_offset;
+            self.start_byte_address + (inode_table_start_block * block_size) + inode_byte_offset;
 
-        // println!("global_byte_offset  0x{:x}", global_byte_offset);
+        let mut inode_buf = vec![0u8; inode_size as usize];
+        self.body
+            .seek(SeekFrom::Start(global_byte_offset))
+            .map_err(|e| e.to_string())?;
+        self.body
+            .read_exact(&mut inode_buf)
+            .map_err(|e| e.to_string())?;
 
-        // Now read the inode bytes
-        self.body.seek(global_byte_offset);
-        // println!("Inode size:{:?}", inode_size);
-        let inode_buf = self.body.read(inode_size as usize);
-        // println!("{:?}", inode_buf);
-        // Parse the inode structure
         let inode = Inode::from_bytes(&inode_buf, inode_size);
-        // println!("{:#?}", inode);
         Ok(inode)
     }
 
@@ -288,9 +266,10 @@ impl<'a> ExtFS<'a> {
         let blocks = self.get_file_blocks(&inode)?;
         let mut data = Vec::with_capacity(size);
         for blk in blocks {
-            let offs = *self.start_byte_address + (blk as u64 * bs as u64);
-            self.body.seek(offs);
-            let mut chunk = self.body.read(bs);
+            let offs = self.start_byte_address + (blk as u64 * bs as u64);
+            self.body.seek(SeekFrom::Start(offs)).unwrap();
+            let mut chunk = vec![0u8; bs];
+            self.body.read_exact(&mut chunk).unwrap();
             data.append(&mut chunk);
         }
         data.truncate(size);
@@ -299,7 +278,6 @@ impl<'a> ExtFS<'a> {
 
     pub fn list_dir(&mut self, inode_num: u32) -> Result<Vec<DirEntry>, Box<dyn Error>> {
         let inode = self.get_inode(inode_num)?;
-
         if !inode.is_dir() {
             return Err(format!(
                 "Inode {} is not a directory (mode=0o{:o})",
@@ -380,9 +358,10 @@ impl<'a> ExtFS<'a> {
         max_ptrs: usize,
     ) -> Result<Vec<u32>, Box<dyn Error>> {
         let bs = self.superblock.block_size() as usize;
-        let offs = *self.start_byte_address + (block_num as u64 * bs as u64);
-        self.body.seek(offs);
-        let raw = self.body.read(bs);
+        let offs = self.start_byte_address + (block_num as u64 * bs as u64);
+        self.body.seek(SeekFrom::Start(offs)).unwrap();
+        let mut raw = vec![0u8; bs];
+        self.body.read_exact(&mut raw).unwrap();
         let mut out = Vec::new();
         for i in 0..max_ptrs {
             let begin = i * 4;
@@ -446,9 +425,10 @@ impl<'a> ExtFS<'a> {
                 let idx_entry = ExtentIndex::from_bytes(&data[idx..idx + idx_sz]);
                 idx += idx_sz;
                 let block_num = idx_entry.leaf();
-                let offset = *self.start_byte_address + (block_num * bs as u64);
-                self.body.seek(offset);
-                let sub = self.body.read(bs);
+                let offset = self.start_byte_address + (block_num * bs as u64);
+                self.body.seek(SeekFrom::Start(offset)).unwrap();
+                let mut sub = vec![0u8; bs];
+                self.body.read_exact(&mut sub).unwrap();
                 let sub_eh = ExtentHeader::from_bytes(&sub[0..8]);
                 self.collect_extents(&sub_eh, &sub, out, level + 1, bs)?;
             }
@@ -457,27 +437,20 @@ impl<'a> ExtFS<'a> {
     }
 
     pub fn read_file(&mut self, path: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        // Split by '/' and ignore empty segments
-        // (an empty first segment occurs if path starts with '/')
         let components: Vec<&str> = path.split('/').filter(|c| !c.is_empty()).collect();
-
-        // Start at the root directory (inode #2 in ext)
         let mut current_inode = 2;
 
         for (i, comp) in components.iter().enumerate() {
             let entries = self.list_dir(current_inode)?;
 
             let mut found = false;
-
             for e in entries {
                 println!("{}", e.name);
                 if e.name == *comp {
                     found = true;
-                    // If this is the last component, we expect a file
                     if i == components.len() - 1 {
                         return self.read(e.inode);
                     } else {
-                        // Not the last component: must be a directory
                         if e.file_type != 0x2 {
                             return Err(format!("'{}' is not a directory", comp).into());
                         }

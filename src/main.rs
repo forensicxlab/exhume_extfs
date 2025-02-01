@@ -4,6 +4,7 @@ use clap::{Arg, ArgAction, Command};
 use clap_num::maybe_hex;
 use exhume_body::Body;
 use extfs::ExtFS;
+use std::io::Read;
 
 fn process_partition(
     file_path: &str,
@@ -15,12 +16,26 @@ fn process_partition(
     json: &bool,
     verbose: &bool,
 ) {
-    let mut body = Body::new(file_path.to_string(), format);
+    let mut body = Body::new_from(file_path.to_string(), format, Some(*offset));
     if *verbose {
         body.print_info();
     }
 
-    let mut filesystem = match ExtFS::new(&mut body, offset) {
+    // let lvm = Lvm2::open(&mut body, *offset).unwrap();
+    // let lv = lvm.lvs().next().unwrap();
+    // println!("LV {}", lv.name());
+    // println!("{:?}", lv.raw_metadata());
+    // let mut olv = lvm.open_lv(lv, &mut body);
+
+    // let mut buf = [0u8; 1024];
+    // olv.read_exact(&mut buf).unwrap();
+    // for _ in 0..16 {
+    //     let mut buf2 = [0u8; 16];
+    //     olv.read_exact(&mut buf2).unwrap();
+    //     println!("{buf2:x?}");
+    // }
+
+    let mut filesystem = match ExtFS::new(&mut body, *offset) {
         Ok(fs) => Some(fs),
         Err(message) => {
             eprintln!("ExtFS object creation error: {}", message);
@@ -57,7 +72,6 @@ fn process_partition(
             //     }
             // };
             // println!("{:?}", String::from_utf8_lossy(&test));
-            //
 
             let file = match fs.read_file("/abi-3.13.0-24-generic") {
                 Ok(file) => file,
