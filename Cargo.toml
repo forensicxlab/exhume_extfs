@@ -7,9 +7,10 @@ edition = "2021"
 chrono = "0.4.26"
 exhume_partitions = { path = "../exhume_partitions" }
 exhume_body = { path = "../exhume_body" }
-log = "0.4.17"
+log = "0.4.25"
 clap = "4.0"
 clap-num = "1.1.1"
 prettytable-rs = "^0.10"
 serde = { version = "1.0.217", features = ["derive"] }
 serde_json = "1.0.135"
+env_logger = "0.11.6"
