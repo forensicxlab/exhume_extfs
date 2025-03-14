@@ -6,6 +6,8 @@ edition = "2021"
 [dependencies]
 chrono = "0.4.26"
 exhume_partitions = { path = "../exhume_partitions" }
+exhume_lvm = { path = "../exhume_lvm" }
+
 exhume_body = { path = "../exhume_body" }
 log = "0.4.25"
 clap = "4.0"

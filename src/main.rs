@@ -1,98 +1,13 @@
-mod extfs;
-
 use clap::{value_parser, Arg, ArgAction, Command};
 use clap_num::maybe_hex;
-use exhume_body::Body;
-use extfs::ExtFS;
+use exhume_body::{Body, BodySlice};
 use log::{debug, error, info};
+use serde_json::{json, Value};
+use std::fs::File;
+use std::io::Write;
 
-fn process_partition(
-    file_path: &str,
-    format: &str,
-    offset: &u64,
-    superblock: &bool,
-    inode_number: &usize,
-    groupdesc: &bool,
-    json: &bool,
-) {
-    let mut body = Body::new_from(file_path.to_string(), format, Some(*offset));
-    // Log body creation at debug level.
-    debug!("Created Body from '{}'", file_path);
-
-    let mut filesystem = match ExtFS::new(&mut body, *offset) {
-        Ok(fs) => Some(fs),
-        Err(message) => {
-            error!("ExtFS object creation error: {}", message);
-            None
-        }
-    };
-
-    if let Some(fs) = &mut filesystem {
-        info!("ExtFS created successfully.");
-        if *superblock {
-            fs.superblock.print_sp_info();
-        }
-
-        if *inode_number > 0 {
-            if let Err(err) = fs.load_group_descriptors() {
-                error!("{}", err);
-            }
-            let inode = match fs.get_inode(*inode_number as u32) {
-                Ok(inode) => inode,
-                Err(err) => {
-                    error!("{}", err);
-                    std::process::exit(1);
-                }
-            };
-
-            // let file = match fs.read_file("/abi-3.13.0-24-generic") {
-            //     Ok(file) => file,
-            //     Err(err) => {
-            //         error!("{}", err);
-            //         std::process::exit(1);
-            //     }
-            // };
-            // info!("File read: {:?}", file);
-            if *json {
-                match serde_json::to_string_pretty(&inode.to_json()) {
-                    Ok(json_str) => info!("{}", json_str),
-                    Err(e) => error!("Error serializing inode: {}", e),
-                }
-            } else {
-                info!("Display the prettytable here");
-            }
-
-            // let test = match fs.read(*inode_number as u32) {
-            //     Ok(test) => test,
-            //     Err(err) => {
-            //         eprintln!("{}", err);
-            //         std::process::exit(1);
-            //     }
-            // };
-            // println!("{:?}", String::from_utf8_lossy(&test));
-        }
-
-        if *groupdesc {
-            if let Err(err) = fs.load_group_descriptors() {
-                error!("{}", err);
-                std::process::exit(1);
-            } else {
-                if *json {
-                    if let Ok(bg_descriptors) = fs.get_bg_descriptors() {
-                        let json_array: Vec<_> =
-                            bg_descriptors.iter().map(|gd| gd.to_json()).collect();
-                        match serde_json::to_string_pretty(&json_array) {
-                            Ok(json_str) => info!("{}", json_str),
-                            Err(e) => error!("Error serializing group descriptors: {}", e),
-                        }
-                    }
-                } else {
-                    info!("Display the prettytable here");
-                }
-            }
-        }
-    }
-}
+mod extfs;
+use extfs::ExtFS;
 
 fn main() {
     let matches = Command::new("exhume_extfs")
@@ -121,35 +36,52 @@ fn main() {
                 .long("offset")
                 .value_parser(maybe_hex::<u64>)
                 .required(true)
-                .help("The extfs partition starts at address 0x...."),
+                .help("The extfs partition starts at address (decimal or hex)."),
+        )
+        .arg(
+            Arg::new("size")
+                .short('s')
+                .long("size")
+                .value_parser(maybe_hex::<u64>)
+                .required(true)
+                .help("The size of the extfs partition in sectors (decimal or hex)."),
         )
         .arg(
             Arg::new("inode")
-                .short('i')
                 .long("inode")
                 .value_parser(maybe_hex::<usize>)
-                .required(false)
-                .help("Get the metadata about a specific inode number (must be >= 2)."),
+                .help("Display the metadata about a specific inode number (>=2)."),
+        )
+        .arg(
+            Arg::new("dir_entry")
+                .long("dir_entry")
+                .action(ArgAction::SetTrue)
+                .help("If --inode is specified and it is a directory, list its directory entries."),
+        )
+        .arg(
+            Arg::new("dump")
+                .long("dump")
+                .action(ArgAction::SetTrue)
+                .help("If --inode is specified, dump its content to a file named 'inode_<N>.bin'."),
         )
         .arg(
             Arg::new("superblock")
-                .short('s')
                 .long("superblock")
                 .action(ArgAction::SetTrue)
                 .help("Display the superblock information."),
         )
         .arg(
             Arg::new("groupdesc")
-                .short('g')
                 .long("groupdesc")
                 .action(ArgAction::SetTrue)
-                .help("Display the group descriptors"),
+                .help("Display group descriptors (placeholder)."),
         )
         .arg(
             Arg::new("json")
                 .short('j')
                 .long("json")
-                .action(ArgAction::SetTrue),
+                .action(ArgAction::SetTrue)
+                .help("Output certain structures (superblock, inode) in JSON format."),
         )
         .arg(
             Arg::new("log_level")
@@ -176,12 +108,147 @@ fn main() {
     let file_path = matches.get_one::<String>("body").unwrap();
     let format = matches.get_one::<String>("format").unwrap();
     let offset = matches.get_one::<u64>("offset").unwrap();
-    let superblock = matches.get_one::<bool>("superblock").unwrap_or(&false);
-    let groupdesc = matches.get_one::<bool>("groupdesc").unwrap_or(&false);
-    let inode = matches.get_one::<usize>("inode").unwrap_or(&0usize);
-    let json = matches.get_one::<bool>("json").unwrap_or(&false);
+    let size = matches.get_one::<u64>("size").unwrap();
 
-    process_partition(
-        file_path, format, offset, superblock, inode, groupdesc, json,
-    );
+    let show_superblock = matches.get_flag("superblock");
+    let show_groupdesc = matches.get_flag("groupdesc");
+    let inode_num = matches.get_one::<usize>("inode").copied().unwrap_or(0);
+    let show_dir_entry = matches.get_flag("dir_entry");
+    let dump_content = matches.get_flag("dump");
+    let json_output = matches.get_flag("json");
+
+    // 1) Prepare the "body" and create an ExtFS instance.
+    let mut body = Body::new(file_path.to_owned(), format);
+    debug!("Created Body from '{}'", file_path);
+
+    let partition_size = *size * body.get_sector_size() as u64;
+    let mut slice = match BodySlice::new(&mut body, *offset, partition_size) {
+        Ok(sl) => sl,
+        Err(e) => {
+            error!("Could not create BodySlice: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let mut filesystem = match ExtFS::new(&mut slice) {
+        Ok(fs) => fs,
+        Err(e) => {
+            error!("Couldn't open ExtFS: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // 2) --superblock
+    if show_superblock {
+        if json_output {
+            match serde_json::to_string_pretty(&filesystem.superblock.to_json()) {
+                Ok(s) => println!("{}", s),
+                Err(e) => error!("Error serializing superblock to JSON: {}", e),
+            }
+        } else {
+            filesystem.superblock.print_sp_info();
+        }
+    }
+
+    // 3) -–groupdesc (placeholder).
+    if show_groupdesc {
+        info!("--groupdesc is not fully implemented yet.");
+        // You could implement loading each GroupDescriptor and printing them,
+        // or returning them as JSON if json_output is enabled.
+    }
+
+    // 4) --inode [N]
+    if inode_num > 0 {
+        let inode = match filesystem.read_inode(inode_num as u64) {
+            Ok(inode_val) => inode_val,
+            Err(e) => {
+                error!("Cannot read inode {}: {}", inode_num, e);
+                std::process::exit(1);
+            }
+        };
+
+        // 4a) Display inode metadata
+        if json_output {
+            match serde_json::to_string_pretty(&inode.to_json()) {
+                Ok(json_str) => println!("{}", json_str),
+                Err(e) => error!("Error serializing inode {} to JSON: {}", inode_num, e),
+            }
+        } else {
+            // Show a textual summary of its metadata (reusing to_json for brevity):
+            let inode_obj = inode.to_json();
+            println!("Inode {} metadata:", inode_num);
+            println!("{}", inode_obj); // The debug JSON output, or parse fields manually
+        }
+
+        // 4b) If --dir_entry is given, try to list directory entries
+        if show_dir_entry {
+            if inode.is_dir() {
+                match filesystem.list_dir(&inode) {
+                    Ok(entries) => {
+                        if json_output {
+                            let arr: Vec<Value> = entries
+                                .iter()
+                                .map(|de| {
+                                    json!({
+                                        "inode": de.inode,
+                                        "rec_len": de.rec_len,
+                                        "file_type": de.file_type,
+                                        "name": de.name,
+                                    })
+                                })
+                                .collect();
+                            let dir_json = json!({ "dir_entries": arr });
+                            println!("{}", serde_json::to_string_pretty(&dir_json).unwrap());
+                        } else {
+                            println!("Directory listing for inode {}:", inode_num);
+                            for de in entries {
+                                println!(
+                                    "  name='{}', inode={}, type=0x{:x}, rec_len={}",
+                                    de.name, de.inode, de.file_type, de.rec_len
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to list directory for inode {}: {}", inode_num, e);
+                    }
+                }
+            } else {
+                error!(
+                    "Requested --dir_entry but inode {} is not a directory.",
+                    inode_num
+                );
+            }
+        }
+
+        // 4c) If --dump is given, attempt to read content and dump to a file
+        if dump_content {
+            info!(
+                "Dumping inode {} content into 'inode_{}.bin'",
+                inode_num, inode_num
+            );
+            match filesystem.read_inode_content(&inode) {
+                Ok(data) => {
+                    let filename = format!("inode_{}.bin", inode_num);
+                    match File::create(&filename) {
+                        Ok(mut f) => {
+                            if let Err(e) = f.write_all(&data) {
+                                error!("Error writing file '{}': {}", filename, e);
+                            } else {
+                                info!(
+                                    "Successfully wrote {} bytes into '{}'",
+                                    data.len(),
+                                    filename
+                                );
+                            }
+                        }
+                        Err(e) => error!("Could not create dump file '{}': {}", filename, e),
+                    }
+                }
+                Err(e) => {
+                    error!("Cannot read content for inode {}: {}", inode_num, e);
+                }
+            }
+        }
+    }
 }

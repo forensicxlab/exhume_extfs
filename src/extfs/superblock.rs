@@ -1,4 +1,5 @@
 /// Reference: https://www.kernel.org/doc/html/v4.19/filesystems/ext4/ondisk/index.html#super-block
+use serde_json::{json, Value};
 use std::convert::TryInto;
 
 const EXT_MAGIC: u16 = 0xEF53;
@@ -245,12 +246,9 @@ impl Superblock {
     }
 
     pub fn descriptor_size(&self) -> usize {
-        if let Some(ref journal) = self.s_journal {
-            if self.is_64bit() && journal.s_desc_size != 0 {
-                journal.s_desc_size as usize
-            } else {
-                32
-            }
+        let desc_size = self.s_journal.as_ref().map(|j| j.s_desc_size).unwrap_or(0);
+        if (self.s_feature_incompat & EXT4_FEATURE_INCOMPAT_64BIT) == 0 && desc_size >= 64 {
+            desc_size as usize
         } else {
             32
         }
@@ -274,5 +272,23 @@ impl Superblock {
 
     pub fn print_sp_info(&self) {
         println!("{:#?}", self);
+    }
+
+    pub fn to_json(&self) -> Value {
+        json!({
+            "inodes_count": self.s_inodes_count,
+            "blocks_count": self.s_blocks_count,
+            "free_blocks_count": self.s_free_blocks_count,
+            "free_inodes_count": self.s_free_inodes_count,
+            "log_block_size": self.s_log_block_size,
+            "blocks_per_group": self.s_blocks_per_group,
+            "inodes_per_group": self.s_inodes_per_group,
+            "inode_size": self.s_inode_size,
+            "magic": format!("0x{:04x}", self.s_magic),
+            "feature_incompat": format!("0x{:08x}", self.s_feature_incompat),
+            "feature_compat": format!("0x{:08x}", self.s_feature_compat),
+            "feature_ro_compat": format!("0x{:08x}", self.s_feature_ro_compat),
+            "is_64bit": self.is_64bit(),
+        })
     }
 }
