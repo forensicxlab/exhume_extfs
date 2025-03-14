@@ -194,7 +194,7 @@ impl<T: Read + Seek> ExtFS<T> {
     }
 
     // Read a particular inode by number.
-    pub fn read_inode(&mut self, inode_num: u64) -> Result<Inode, Box<dyn Error>> {
+    pub fn get_inode(&mut self, inode_num: u64) -> Result<Inode, Box<dyn Error>> {
         if inode_num < 1 || inode_num > self.superblock.s_inodes_count {
             return Err(format!("Inode {} out of valid range", inode_num).into());
         }
@@ -407,7 +407,7 @@ impl<T: Read + Seek> ExtFS<T> {
     // -------------------------------------------------------------------------
     // 3. Read the content of a file (or directory) from the given inode.
     // -------------------------------------------------------------------------
-    pub fn read_inode_content(&mut self, inode: &Inode) -> Result<Vec<u8>, Box<dyn Error>> {
+    pub fn read_inode(&mut self, inode: &Inode) -> Result<Vec<u8>, Box<dyn Error>> {
         // Corner case #1: Small symlink content is stored in i_block if the symlink is short.
         // For ext4, if inode.is_symlink() and size < 60, the symlink target is in i_block directly:
         if inode.is_symlink() {
@@ -511,7 +511,7 @@ impl<T: Read + Seek> ExtFS<T> {
         if !inode.is_dir() {
             return Err("Not a directory inode".into());
         }
-        let dir_data = self.read_inode_content(inode)?;
+        let dir_data = self.read_inode(inode)?;
         let mut entries = Vec::new();
         let mut offset = 0usize;
         let fs_feature_incompat = self.superblock.feature_incompat();
@@ -550,7 +550,7 @@ impl<T: Read + Seek> ExtFS<T> {
             .collect::<Vec<_>>();
 
         // Start from root inode (2)
-        let mut current_inode = self.read_inode(2)?;
+        let mut current_inode = self.get_inode(2)?;
 
         for (i, part) in parts.iter().enumerate() {
             if !current_inode.is_dir() {
@@ -570,13 +570,13 @@ impl<T: Read + Seek> ExtFS<T> {
             if !found {
                 return Err(format!("Path component '{}' not found", part).into());
             }
-            let next_inode = self.read_inode(next_inode_num)?;
+            let next_inode = self.get_inode(next_inode_num)?;
             current_inode = next_inode;
 
             if i == parts.len() - 1 {
                 // last component => read the file content
                 if current_inode.is_regular_file() || current_inode.is_symlink() {
-                    return self.read_inode_content(&current_inode);
+                    return self.read_inode(&current_inode);
                 } else if current_inode.is_dir() {
                     return Err(format!("'{}' is a directory, not a file", part).into());
                 } else {

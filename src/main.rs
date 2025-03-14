@@ -159,7 +159,7 @@ fn main() {
 
     // 4) --inode [N]
     if inode_num > 0 {
-        let inode = match filesystem.read_inode(inode_num as u64) {
+        let inode = match filesystem.get_inode(inode_num as u64) {
             Ok(inode_val) => inode_val,
             Err(e) => {
                 error!("Cannot read inode {}: {}", inode_num, e);
@@ -227,7 +227,7 @@ fn main() {
                 "Dumping inode {} content into 'inode_{}.bin'",
                 inode_num, inode_num
             );
-            match filesystem.read_inode_content(&inode) {
+            match filesystem.read_inode(&inode) {
                 Ok(data) => {
                     let filename = format!("inode_{}.bin", inode_num);
                     match File::create(&filename) {
