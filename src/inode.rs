@@ -3,33 +3,61 @@ use serde_json::{json, Value};
 
 #[derive(Debug)]
 pub struct Inode {
+    /// File mode
     pub i_mode: u16,
+    /// Low 16-bit User ID
     pub i_uid: u16,
+    /// Lower 32-bits of size
     pub i_size_lo: u32,
+    /// Access time
     pub i_atime: u32,
+    /// Creation time
     pub i_ctime: u32,
+    /// Modification time
     pub i_mtime: u32,
+    /// Deletion time
     pub i_dtime: u32,
+    /// Low 16-bit Group ID
     pub i_gid: u16,
+    /// Link count
     pub i_links_count: u16,
+    /// Lower 32-bits of block count
     pub i_blocks_lo: u32,
+    /// File flags
     pub i_flags: u32,
+    /// Pointers to blocks
     pub i_block: [u32; 15],
+    /// File version (for NFS)
     pub i_generation: u32,
+    /// Lower 32-bits of File ACL
     pub i_file_acl_lo: u32,
+    /// Upper 32-bits of size
     pub i_size_high: u32,
+    /// Upper 16-bits of block count
     pub l_i_blocks_high: u16,
+    /// Upper 16-bits of File ACL
     pub l_i_file_acl_high: u16,
+    /// High 16-bit User ID
     pub l_i_uid_high: u16,
+    /// High 16-bit Group ID
     pub l_i_gid_high: u16,
+    /// Lower 16-bits of inode checksum
     pub l_i_checksum_lo: u16,
+    /// Extra size of inode
     pub i_extra_isize: u16,
+    /// Upper 16-bits of inode checksum
     pub i_checksum_hi: u16,
+    /// Extra creation time
     pub i_ctime_extra: u32,
+    /// Extra modification time
     pub i_mtime_extra: u32,
+    /// Extra access time
     pub i_atime_extra: u32,
+    /// Creation time
     pub i_crtime: u32,
+    /// Extra creation time
     pub i_crtime_extra: u32,
+    /// Project ID
     pub i_projid: u32,
 }
 
@@ -39,9 +67,11 @@ impl Inode {
     /// Typically, `data` must be at least 128 or 256 bytes, depending on the
     /// inode size configured in the superblock.
     pub fn from_bytes(data: &[u8], inode_size: u64) -> Self {
+        /// Helper function to parse little-endian u16 from byte slice at an offset.
         let le_u16 = |offset: usize| -> u16 {
             u16::from_le_bytes(data[offset..offset + 2].try_into().unwrap())
         };
+        /// Helper function to parse little-endian u32 from byte slice at an offset.
         let le_u32 = |offset: usize| -> u32 {
             u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap())
         };
@@ -60,6 +90,7 @@ impl Inode {
         let i_blocks_lo = le_u32(0x1C);
         let i_flags = le_u32(0x20);
 
+        // Parse block pointers into an array.
         let mut i_block = [0u32; 15];
         for i in 0..15 {
             i_block[i] = le_u32(0x28 + i * 4);
@@ -83,7 +114,7 @@ impl Inode {
         let i_crtime_extra = if inode_size >= 256 { le_u32(0x94) } else { 0 };
         let i_projid = if inode_size >= 256 { le_u32(0x9C) } else { 0 };
 
-        // Construct the inode.
+        // Construct the inode structure.
         Inode {
             i_mode,
             i_uid,
@@ -119,15 +150,16 @@ impl Inode {
     /// Returns the full 64-bit size of the file by combining `i_size_lo` and
     /// `i_size_high`.
     pub fn size(&self) -> u64 {
+        // Bitwise shift and combine low/high bits for full size.
         ((self.i_size_high as u64) << 32) | (self.i_size_lo as u64)
     }
 
-    /// Returns the i_mode
+    /// Returns the file mode field.
     pub fn mode(&self) -> u16 {
         self.i_mode
     }
 
-    /// Returns the i_flag
+    /// Returns the flags field for the inode.
     pub fn flag(&self) -> u32 {
         self.i_flags
     }
@@ -162,6 +194,7 @@ impl Inode {
     /// Combined 32-bit block count (`i_blocks_lo` + `l_i_blocks_high`)
     /// This is normally the total number of 512-byte *segments* (for ext2/3/4),
     pub fn block_count(&self) -> u64 {
+        // Combine low and high block count parts.
         ((self.l_i_blocks_high as u64) << 32) | (self.i_blocks_lo as u64)
     }
 
@@ -179,6 +212,7 @@ impl Inode {
     /// Combined 32-bit checksum (l_i_checksum_lo + i_checksum_hi)
     /// The "low" part is 16 bits, and the "high" part is another 16 bits.
     pub fn checksum(&self) -> u32 {
+        // Combine low and high checksum parts.
         ((self.i_checksum_hi as u32) << 16) | (self.l_i_checksum_lo as u32)
     }
 
@@ -186,6 +220,7 @@ impl Inode {
     /// The `i_file_acl_lo` is 32 bits, and `l_i_file_acl_high` is 16 bits.
     /// You can store them in a u64 for convenience.
     pub fn file_acl(&self) -> u64 {
+        // Combine low and high parts of File ACL.
         ((self.l_i_file_acl_high as u64) << 32) | (self.i_file_acl_lo as u64)
     }
 

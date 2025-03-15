@@ -1,13 +1,11 @@
 use clap::{value_parser, Arg, ArgAction, Command};
 use clap_num::maybe_hex;
 use exhume_body::{Body, BodySlice};
+use exhume_extfs::ExtFS;
 use log::{debug, error, info};
 use serde_json::{json, Value};
 use std::fs::File;
 use std::io::Write;
-
-mod extfs;
-use extfs::ExtFS;
 
 fn main() {
     let matches = Command::new("exhume_extfs")
