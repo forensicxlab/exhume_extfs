@@ -14,6 +14,8 @@ use groupdescriptor::GroupDescriptor;
 use inode::Inode;
 use superblock::Superblock;
 
+use std::path::Path;
+
 const INCOMPAT_EXTENTS: u32 = 0x40; // typical ext4 incompat flag for extents
 const EXT4_EXTENTS_FL: u32 = 0x00080000; // i_flags bit for extents
 const EXT4_INLINE_DATA_FL: u32 = 0x10000000; // i_flags bit for inline data (if enabled)
@@ -42,6 +44,10 @@ impl<T: Read + Seek> ExtFS<T> {
         };
 
         Ok(ExtFS { superblock, body })
+    }
+
+    pub fn total_inodes(&self) -> u64 {
+        self.superblock.s_inodes_count as u64
     }
 
     /// Returns the offset where group descriptors start based on block size.
@@ -467,5 +473,99 @@ impl<T: Read + Seek> ExtFS<T> {
         }
 
         Err("No file found; maybe the path was empty or ended with a directory".into())
+    }
+
+    /// Resolve a path to its (inode number, Inode) without reading file contents.
+    /// This is similar to read_file_by_path but returns the final inode rather
+    /// than reading its data.
+    pub fn resolve_path_to_inode_num(
+        &mut self,
+        path: &str,
+    ) -> Result<(u64, Inode), Box<dyn Error>> {
+        let parts = path
+            .split('/')
+            .filter(|p| !p.is_empty())
+            .collect::<Vec<_>>();
+
+        // Special case: "/" is root => inode 2
+        if path == "/" {
+            let root_inode = self.get_inode(2)?;
+            return Ok((2, root_inode));
+        }
+
+        // Start from root inode (2)
+        let mut current_inode = self.get_inode(2)?;
+        let mut current_inode_num = 2;
+
+        for (i, part) in parts.iter().enumerate() {
+            if !current_inode.is_dir() {
+                return Err(format!(
+                    "'{}' is not a directory while resolving path '{}'",
+                    part, path
+                )
+                .into());
+            }
+            // find `part` in current directory
+            let entries = self.list_dir(&current_inode)?;
+            let mut found = false;
+            let mut next_inode_num = 0;
+            for de in entries {
+                if de.name == *part {
+                    found = true;
+                    next_inode_num = de.inode as u64;
+                    break;
+                }
+            }
+            if !found {
+                return Err(format!("Path component '{}' not found in '{}'", part, path).into());
+            }
+
+            let next_inode = self.get_inode(next_inode_num)?;
+            current_inode = next_inode;
+            current_inode_num = next_inode_num;
+
+            // If last component, we have our final inode
+            if i == parts.len() - 1 {
+                return Ok((current_inode_num, current_inode));
+            }
+        }
+
+        // If somehow we exhausted the loop but no final inode was returned:
+        Err(format!("Incomplete path resolution for '{}'", path).into())
+    }
+
+    /// Simple helper to extract the parent directory and filename from a path.
+    pub fn split_path_parent_name(path: &str) -> (String, String) {
+        // Use Rust’s Path/Component logic to handle edge cases
+        let p = Path::new(path);
+
+        // If path is root "/" => special-case
+        if path == "/" {
+            return ("/".to_string(), "/".to_string());
+        }
+
+        let filename = p
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "/".to_owned());
+
+        let parent = match p.parent() {
+            Some(par) if par.as_os_str().is_empty() => "/".to_owned(),
+            Some(par) => {
+                let s = par.to_string_lossy().to_string();
+                // If empty or root, return "/"
+                if s.is_empty() {
+                    "/".to_owned()
+                } else {
+                    s
+                }
+            }
+            None => "/".to_string(),
+        };
+
+        // Because leading “/” can vanish if this was a root-based path, ensure a slash.
+        // Example: path="/foo/bar" => parent="/foo", filename="bar"
+        //          path="/bar" => parent="/", filename="bar"
+        (parent, filename)
     }
 }

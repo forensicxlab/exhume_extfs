@@ -22,7 +22,7 @@ impl DirEntry {
     /// # Returns
     /// A DirEntry object populated from the given data
     pub fn from_bytes(data: &[u8], comp: u32) -> DirEntry {
-        let mut name_len = 0usize;
+        let name_len;
         let mut ftype = 0u8;
 
         // If the filesystem has the 'filetype' incompat feature, name_len is 1 byte, followed by a
