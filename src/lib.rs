@@ -495,7 +495,7 @@ impl<T: Read + Seek> ExtFS<T> {
 
         // Start from root inode (2)
         let mut current_inode = self.get_inode(2)?;
-        let mut current_inode_num = 2;
+        let mut current_inode_num;
 
         for (i, part) in parts.iter().enumerate() {
             if !current_inode.is_dir() {

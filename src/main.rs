@@ -25,7 +25,7 @@ fn main() {
                 .short('f')
                 .long("format")
                 .value_parser(value_parser!(String))
-                .required(true)
+                .required(false)
                 .help("The format of the file, either 'raw' or 'ewf'."),
         )
         .arg(
@@ -104,7 +104,8 @@ fn main() {
     env_logger::Builder::new().filter_level(level_filter).init();
 
     let file_path = matches.get_one::<String>("body").unwrap();
-    let format = matches.get_one::<String>("format").unwrap();
+    let auto = String::from("auto");
+    let format = matches.get_one::<String>("format").unwrap_or(&auto);
     let offset = matches.get_one::<u64>("offset").unwrap();
     let size = matches.get_one::<u64>("size").unwrap();
 
@@ -166,16 +167,12 @@ fn main() {
         };
 
         // 4a) Display inode metadata
-        if json_output {
-            match serde_json::to_string_pretty(&inode.to_json()) {
-                Ok(json_str) => println!("{}", json_str),
-                Err(e) => error!("Error serializing inode {} to JSON: {}", inode_num, e),
+        match serde_json::to_string_pretty(&inode.to_json()) {
+            Ok(json_str) => {
+                info!("Inode {} metadata:", inode_num);
+                println!("{}", json_str)
             }
-        } else {
-            // Show a textual summary of its metadata (reusing to_json for brevity):
-            let inode_obj = inode.to_json();
-            println!("Inode {} metadata:", inode_num);
-            println!("{}", inode_obj); // The debug JSON output, or parse fields manually
+            Err(e) => error!("Error serializing inode {} to JSON: {}", inode_num, e),
         }
 
         // 4b) If --dir_entry is given, try to list directory entries
@@ -198,12 +195,9 @@ fn main() {
                             let dir_json = json!({ "dir_entries": arr });
                             println!("{}", serde_json::to_string_pretty(&dir_json).unwrap());
                         } else {
-                            println!("Directory listing for inode {}:", inode_num);
+                            info!("Directory listing for inode {}:", inode_num);
                             for de in entries {
-                                println!(
-                                    "  name='{}', inode={}, type=0x{:x}, rec_len={}",
-                                    de.name, de.inode, de.file_type, de.rec_len
-                                );
+                                println!("{} / 0x{:x} {}", de.inode, de.file_type, de.name);
                             }
                         }
                     }
