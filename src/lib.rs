@@ -103,7 +103,7 @@ impl<T: Read + Seek> ExtFS<T> {
         self.body.read_exact(&mut buf)?;
 
         // Parse the inode
-        let inode = Inode::from_bytes(&buf, isz as u64);
+        let inode = Inode::from_bytes(inode_num, &buf, isz as u64);
         Ok(inode)
     }
 
@@ -122,7 +122,6 @@ impl<T: Read + Seek> ExtFS<T> {
     }
 
     /// Parse extents to collect all runs as (logical_block, physical_block, length).
-    /// Combines them into full block lists if needed.
     fn parse_extents(&mut self, inode: &Inode) -> Result<Vec<(u64, u64, u64)>, Box<dyn Error>> {
         // The first 12 bytes of i_block contain the ExtentHeader if extents are used
         let mut raw_header = [0u8; 12];
@@ -143,7 +142,7 @@ impl<T: Read + Seek> ExtFS<T> {
 
         let mut extents_info = Vec::new();
 
-        // Recursive function to parse an extent node.
+        /// Recursive function to parse an extent node.
         fn parse_extent_node<T: Read + Seek>(
             fs: &mut ExtFS<T>,
             block_num: u64,
@@ -316,11 +315,8 @@ impl<T: Read + Seek> ExtFS<T> {
             }
         }
 
-        // Corner case #2: Inline data (EXT4_INLINE_DATA_FL). If the filesystem + inode actually
-        // supports it, the first bytes are in i_block. For demonstration, we show a simple approach:
+        // Corner case #2: Inline data
         if (inode.flag() & EXT4_INLINE_DATA_FL) != 0 {
-            // NOTE: Real ext4 inline data uses special structures in the i_block area. Here we do
-            // a minimal approach: take min(inode.size(), 60) from i_block as data:
             let inline_sz = std::cmp::min(60, inode.size() as usize);
             let mut inline_data = Vec::new();
             inline_data.resize(inline_sz, 0);
@@ -332,10 +328,6 @@ impl<T: Read + Seek> ExtFS<T> {
                 tmp
             };
             inline_data.copy_from_slice(&i_block_as_bytes[0..inline_sz]);
-            // If the inode is fully inline, that might be the entire data.
-            // If not fully inline, we'd also read the remainder via direct/indirect or extents.
-            // For now, we’ll assume the entire file is inline if the flag is set.
-            // Adjust as needed if your FS supports partial inline data + extents.
             return Ok(inline_data);
         }
 
@@ -563,9 +555,6 @@ impl<T: Read + Seek> ExtFS<T> {
             None => "/".to_string(),
         };
 
-        // Because leading “/” can vanish if this was a root-based path, ensure a slash.
-        // Example: path="/foo/bar" => parent="/foo", filename="bar"
-        //          path="/bar" => parent="/", filename="bar"
         (parent, filename)
     }
 }

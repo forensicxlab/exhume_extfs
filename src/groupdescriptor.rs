@@ -1,6 +1,7 @@
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GroupDescriptor {
     // Full 64-bit block number for the block bitmap.
     bg_block_bitmap: u64,
@@ -103,19 +104,7 @@ impl GroupDescriptor {
         self.bg_inode_table
     }
 
-    /// Converts the group descriptor into a JSON object for external use.
-    ///
-    /// The 'to_json' method is used by external modules (e.g., Thanatology)
-    /// to serialize the GroupDescriptor structure for JSON-based applications.
     pub fn to_json(&self) -> Value {
-        json!({
-            "block_bitmap": self.bg_block_bitmap,
-            "inode_bitmap": self.bg_inode_bitmap,
-            "inode_table": self.bg_inode_table,
-            "free_blocks_count": self.bg_free_blocks_count,
-            "free_inodes_count": self.bg_free_inodes_count,
-            "used_dirs_count": self.bg_used_dirs_count,
-            "flags": self.bg_flags,
-        })
+        serde_json::to_value(self).unwrap_or_else(|_| json!({}))
     }
 }

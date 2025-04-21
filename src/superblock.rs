@@ -1,18 +1,21 @@
+use prettytable::{Cell, Row, Table};
 /// Reference: https://www.kernel.org/doc/html/v4.19/filesystems/ext4/ondisk/index.html#super-block
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+
 use std::convert::TryInto;
 
 const EXT_MAGIC: u16 = 0xEF53;
 const EXT4_FEATURE_COMPAT_HAS_JOURNAL: u32 = 0x4;
 const EXT4_FEATURE_INCOMPAT_64BIT: u32 = 0x80000;
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Performance {
     pub s_prealloc_blocks: u8,
     pub s_prealloc_dir_blocks: u8,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Journaling {
     pub s_journal_uuid: [u8; 16],
     pub s_journal_inum: u32,
@@ -72,7 +75,7 @@ impl Journaling {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Superblock {
     pub s_inodes_count: u64,
     pub s_blocks_count: u64,
@@ -107,7 +110,7 @@ pub struct Superblock {
     pub s_feature_ro_compat: u32,
     pub s_uuid: [u8; 16],
     pub s_volume_name: [u8; 16],
-    pub s_last_mounted: [u8; 64],
+    pub s_last_mounted: Vec<u8>,
     pub s_algorithm_usage_bitmap: u32,
     pub s_performance: Performance,
     pub s_journal: Option<Journaling>,
@@ -161,7 +164,7 @@ impl Superblock {
         let s_feature_ro_compat = le_u32(0x64);
         let s_uuid: [u8; 16] = data[0x68..0x78].try_into().unwrap();
         let s_volume_name: [u8; 16] = data[0x78..0x88].try_into().unwrap();
-        let s_last_mounted: [u8; 64] = data[0x88..0xC8].try_into().unwrap();
+        let s_last_mounted: Vec<u8> = data[0x88..0xC8].to_vec();
         let s_algorithm_usage_bitmap = le_u32(0xC8);
         let s_performance = Performance {
             s_prealloc_blocks: le_u8(0xCC),
@@ -270,25 +273,183 @@ impl Superblock {
         self.s_feature_incompat
     }
 
-    pub fn print_sp_info(&self) {
-        println!("{:#?}", self);
+    pub fn to_json(&self) -> Value {
+        serde_json::to_value(self).unwrap_or_else(|_| json!({}))
     }
 
-    pub fn to_json(&self) -> Value {
-        json!({
-            "inodes_count": self.s_inodes_count,
-            "blocks_count": self.s_blocks_count,
-            "free_blocks_count": self.s_free_blocks_count,
-            "free_inodes_count": self.s_free_inodes_count,
-            "log_block_size": self.s_log_block_size,
-            "blocks_per_group": self.s_blocks_per_group,
-            "inodes_per_group": self.s_inodes_per_group,
-            "inode_size": self.s_inode_size,
-            "magic": format!("0x{:04x}", self.s_magic),
-            "feature_incompat": format!("0x{:08x}", self.s_feature_incompat),
-            "feature_compat": format!("0x{:08x}", self.s_feature_compat),
-            "feature_ro_compat": format!("0x{:08x}", self.s_feature_ro_compat),
-            "is_64bit": self.is_64bit(),
-        })
+    fn format_uuid(array: &[u8; 16]) -> String {
+        array
+            .iter()
+            .map(|b| format!("{:02X}", b))
+            .collect::<Vec<_>>()
+            .join("-")
+    }
+
+    pub fn to_string(&self) -> String {
+        let mut table = Table::new();
+
+        // Adding rows to the table
+        table.add_row(Row::new(vec![
+            Cell::new("Inodes Count"),
+            Cell::new(&self.s_inodes_count.to_string()),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Blocks Count"),
+            Cell::new(&self.s_blocks_count.to_string()),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Reserved Blocks Count"),
+            Cell::new(&self.s_r_blocks_count.to_string()),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Free Blocks Count"),
+            Cell::new(&self.s_free_blocks_count.to_string()),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Free Inodes Count"),
+            Cell::new(&self.s_free_inodes_count.to_string()),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("First Data Block"),
+            Cell::new(&format!("{:#X}", self.s_first_data_block)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Log Block Size"),
+            Cell::new(&format!("{:#X}", self.s_log_block_size)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Log Cluster Size"),
+            Cell::new(&format!("{:#X}", self.s_log_cluster_size)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Blocks per Group"),
+            Cell::new(&self.s_blocks_per_group.to_string()),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Clusters per Group"),
+            Cell::new(&self.s_clusters_per_group.to_string()),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Inodes per Group"),
+            Cell::new(&self.s_inodes_per_group.to_string()),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Mount Time"),
+            Cell::new(&self.s_mtime.to_string()),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Write Time"),
+            Cell::new(&self.s_wtime.to_string()),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Mount Count"),
+            Cell::new(&self.s_mnt_count.to_string()),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Max Mount Count"),
+            Cell::new(&self.s_max_mnt_count.to_string()),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Magic"),
+            Cell::new(&format!("{:#06X}", self.s_magic)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("State"),
+            Cell::new(&format!("{:#06X}", self.s_state)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Errors"),
+            Cell::new(&format!("{:#06X}", self.s_errors)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Minor Revision Level"),
+            Cell::new(&self.s_minor_rev_level.to_string()),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Last Check"),
+            Cell::new(&self.s_lastcheck.to_string()),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Check Interval"),
+            Cell::new(&self.s_checkinterval.to_string()),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Creator OS"),
+            Cell::new(&format!("{:#010X}", self.s_creator_os)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Revision Level"),
+            Cell::new(&format!("{:#010X}", self.s_rev_level)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Default Res UID"),
+            Cell::new(&self.s_def_resuid.to_string()),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Default Res GID"),
+            Cell::new(&self.s_def_resgid.to_string()),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("First Inode"),
+            Cell::new(&format!("{:#X}", self.s_first_ino)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Inode Size"),
+            Cell::new(&self.s_inode_size.to_string()),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Block Group Number"),
+            Cell::new(&self.s_block_group_nr.to_string()),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Feature Compatible"),
+            Cell::new(&format!("{:#010X}", self.s_feature_compat)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Feature Incompatible"),
+            Cell::new(&format!("{:#010X}", self.s_feature_incompat)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Feature Read-Only Compatible"),
+            Cell::new(&format!("{:#010X}", self.s_feature_ro_compat)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("UUID"),
+            Cell::new(&Self::format_uuid(&self.s_uuid)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Volume Name"),
+            Cell::new(&String::from_utf8_lossy(&self.s_volume_name).to_string()),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Last Mounted"),
+            Cell::new(&String::from_utf8_lossy(&self.s_last_mounted).to_string()),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Algorithm Usage Bitmap"),
+            Cell::new(&format!("{:#010X}", self.s_algorithm_usage_bitmap)),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Performance - Prealloc Blocks"),
+            Cell::new(&self.s_performance.s_prealloc_blocks.to_string()),
+        ]));
+        table.add_row(Row::new(vec![
+            Cell::new("Performance - Prealloc Dir Blocks"),
+            Cell::new(&self.s_performance.s_prealloc_dir_blocks.to_string()),
+        ]));
+
+        if let Some(journal) = &self.s_journal {
+            table.add_row(Row::new(vec![
+                Cell::new("Journal UUID"),
+                Cell::new(&Self::format_uuid(&journal.s_journal_uuid)),
+            ]));
+            table.add_row(Row::new(vec![
+                Cell::new("Journal Inode Num"),
+                Cell::new(&journal.s_journal_inum.to_string()),
+            ]));
+            // Add more journal details if needed
+        }
+
+        table.to_string()
     }
 }

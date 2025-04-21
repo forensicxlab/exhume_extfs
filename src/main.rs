@@ -9,7 +9,7 @@ use std::io::Write;
 
 fn main() {
     let matches = Command::new("exhume_extfs")
-        .version("1.0")
+        .version("0.1.1")
         .author("ForensicXlab")
         .about("Exhume the metadata from an extfs partition.")
         .arg(
@@ -46,12 +46,14 @@ fn main() {
         )
         .arg(
             Arg::new("inode")
+                .short('i')
                 .long("inode")
                 .value_parser(maybe_hex::<usize>)
                 .help("Display the metadata about a specific inode number (>=2)."),
         )
         .arg(
             Arg::new("dir_entry")
+                .short('d')
                 .long("dir_entry")
                 .action(ArgAction::SetTrue)
                 .help("If --inode is specified and it is a directory, list its directory entries."),
@@ -67,12 +69,6 @@ fn main() {
                 .long("superblock")
                 .action(ArgAction::SetTrue)
                 .help("Display the superblock information."),
-        )
-        .arg(
-            Arg::new("groupdesc")
-                .long("groupdesc")
-                .action(ArgAction::SetTrue)
-                .help("Display group descriptors (placeholder)."),
         )
         .arg(
             Arg::new("json")
@@ -110,7 +106,6 @@ fn main() {
     let size = matches.get_one::<u64>("size").unwrap();
 
     let show_superblock = matches.get_flag("superblock");
-    let show_groupdesc = matches.get_flag("groupdesc");
     let inode_num = matches.get_one::<usize>("inode").copied().unwrap_or(0);
     let show_dir_entry = matches.get_flag("dir_entry");
     let dump_content = matches.get_flag("dump");
@@ -125,7 +120,7 @@ fn main() {
         Ok(sl) => sl,
         Err(e) => {
             error!("Could not create BodySlice: {}", e);
-            std::process::exit(1);
+            return;
         }
     };
 
@@ -133,11 +128,10 @@ fn main() {
         Ok(fs) => fs,
         Err(e) => {
             error!("Couldn't open ExtFS: {}", e);
-            std::process::exit(1);
+            return;
         }
     };
 
-    // 2) --superblock
     if show_superblock {
         if json_output {
             match serde_json::to_string_pretty(&filesystem.superblock.to_json()) {
@@ -145,53 +139,25 @@ fn main() {
                 Err(e) => error!("Error serializing superblock to JSON: {}", e),
             }
         } else {
-            filesystem.superblock.print_sp_info();
+            println!("{}", filesystem.superblock.to_string());
         }
     }
 
-    // 3) -–groupdesc (placeholder).
-    if show_groupdesc {
-        info!("--groupdesc is not fully implemented yet.");
-        // You could implement loading each GroupDescriptor and printing them,
-        // or returning them as JSON if json_output is enabled.
-    }
-
-    // 4) --inode [N]
     if inode_num > 0 {
         let inode = match filesystem.get_inode(inode_num as u64) {
             Ok(inode_val) => inode_val,
             Err(e) => {
                 error!("Cannot read inode {}: {}", inode_num, e);
-                std::process::exit(1);
+                return;
             }
         };
 
-        // 4a) Display inode metadata
-        match serde_json::to_string_pretty(&inode.to_json()) {
-            Ok(json_str) => {
-                info!("Inode {} metadata:", inode_num);
-                println!("{}", json_str)
-            }
-            Err(e) => error!("Error serializing inode {} to JSON: {}", inode_num, e),
-        }
-
-        // 4b) If --dir_entry is given, try to list directory entries
         if show_dir_entry {
             if inode.is_dir() {
                 match filesystem.list_dir(&inode) {
                     Ok(entries) => {
                         if json_output {
-                            let arr: Vec<Value> = entries
-                                .iter()
-                                .map(|de| {
-                                    json!({
-                                        "inode": de.inode,
-                                        "rec_len": de.rec_len,
-                                        "file_type": de.file_type,
-                                        "name": de.name,
-                                    })
-                                })
-                                .collect();
+                            let arr: Vec<Value> = entries.iter().map(|de| de.to_json()).collect();
                             let dir_json = json!({ "dir_entries": arr });
                             println!("{}", serde_json::to_string_pretty(&dir_json).unwrap());
                         } else {
@@ -211,9 +177,20 @@ fn main() {
                     inode_num
                 );
             }
+        } else {
+            if json_output {
+                match serde_json::to_string_pretty(&inode.to_json()) {
+                    Ok(json_str) => {
+                        info!("Inode {} metadata:", inode_num);
+                        println!("{}", json_str)
+                    }
+                    Err(e) => error!("Error serializing inode {} to JSON: {}", inode_num, e),
+                }
+            } else {
+                println!("{}", inode.to_string());
+            }
         }
 
-        // 4c) If --dump is given, attempt to read content and dump to a file
         if dump_content {
             info!(
                 "Dumping inode {} content into 'inode_{}.bin'",

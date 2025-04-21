@@ -1,8 +1,14 @@
 /// Reference: https://www.kernel.org/doc/html/latest/filesystems/ext4/index.html
+use chrono::{TimeZone, Utc};
+use prettytable::{Cell, Row, Table};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-#[derive(Debug)]
+const EXT4_NSEC_MASK: u32 = 0xFFFFFFFC;
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Inode {
+    pub i_num: u64,
     pub i_mode: u16,
     pub i_uid: u16,
     pub i_size_lo: u32,
@@ -10,6 +16,10 @@ pub struct Inode {
     pub i_ctime: u32,
     pub i_mtime: u32,
     pub i_dtime: u32,
+    pub i_atime_h: String,
+    pub i_ctime_h: String,
+    pub i_mtime_h: String,
+    pub i_dtime_h: String,
     pub i_gid: u16,
     pub i_links_count: u16,
     pub i_blocks_lo: u32,
@@ -30,20 +40,33 @@ pub struct Inode {
     pub i_atime_extra: u32,
     pub i_crtime: u32,
     pub i_crtime_extra: u32,
+    pub i_crtime_h: String,
     pub i_projid: u32,
 }
 
 impl Inode {
-    /// Parse an ext4-like inode from a raw byte slice.
-    ///
-    /// Typically, `data` must be at least 128 or 256 bytes, depending on the
-    /// inode size configured in the superblock.
-    pub fn from_bytes(data: &[u8], inode_size: u64) -> Self {
+    pub fn from_bytes(i_num: u64, data: &[u8], inode_size: u64) -> Self {
+        // Some helper functions to read u16 and u32. We could use Cursor in the futur that could be good.
         let le_u16 = |offset: usize| -> u16 {
             u16::from_le_bytes(data[offset..offset + 2].try_into().unwrap())
         };
         let le_u32 = |offset: usize| -> u32 {
             u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap())
+        };
+
+        let format_time = |seconds: u32, extra: u32| {
+            if extra > 0 {
+                let raw_nsec = (extra & EXT4_NSEC_MASK) >> 2;
+                Utc.timestamp_opt(seconds as i64, raw_nsec)
+                    .single()
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_default()
+            } else {
+                Utc.timestamp_opt(seconds as i64, 0)
+                    .single()
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_default()
+            }
         };
 
         // Always parse the first 128 bytes
@@ -85,6 +108,7 @@ impl Inode {
 
         // Construct the inode.
         Inode {
+            i_num,
             i_mode,
             i_uid,
             i_size_lo,
@@ -92,6 +116,10 @@ impl Inode {
             i_ctime,
             i_mtime,
             i_dtime,
+            i_atime_h: format_time(i_atime, i_atime_extra),
+            i_ctime_h: format_time(i_ctime, i_ctime_extra),
+            i_mtime_h: format_time(i_mtime, i_mtime_extra),
+            i_dtime_h: format_time(i_dtime, 0),
             i_gid,
             i_links_count: i_links_cnt,
             i_blocks_lo,
@@ -112,6 +140,7 @@ impl Inode {
             i_atime_extra,
             i_crtime,
             i_crtime_extra,
+            i_crtime_h: format_time(i_crtime, i_crtime_extra),
             i_projid,
         }
     }
@@ -184,45 +213,140 @@ impl Inode {
 
     /// Combined 48-bit file ACL (i_file_acl_lo + l_i_file_acl_high).
     /// The `i_file_acl_lo` is 32 bits, and `l_i_file_acl_high` is 16 bits.
-    /// You can store them in a u64 for convenience.
     pub fn file_acl(&self) -> u64 {
         ((self.l_i_file_acl_high as u64) << 32) | (self.i_file_acl_lo as u64)
     }
 
     /// The to_json method.
-    /// All of the exhume modules have a 'to_json' method in order to be used by
-    /// external applications (see Thanatology for example)
     pub fn to_json(&self) -> Value {
-        json!({
-            "mode": self.i_mode,
-            "atime": self.i_atime,
-            "ctime": self.i_ctime,
-            "mtime": self.i_mtime,
-            "dtime": self.i_dtime,
-            "links_count": self.i_links_count,
-            "flags": self.i_flags,
-            "block_pointers": self.block_pointers(),
-            "generation": self.i_generation,
-            "extra_isize": self.i_extra_isize,
-            "ctime_extra": self.i_ctime_extra,
-            "mtime_extra": self.i_mtime_extra,
-            "atime_extra": self.i_atime_extra,
-            "crtime": self.i_crtime,
-            "crtime_extra": self.i_crtime_extra,
-            "projid": self.i_projid,
+        serde_json::to_value(self).unwrap_or_else(|_| json!({}))
+    }
 
-            // --- Combined fields ---
-            "uid": self.uid(),
-            "gid": self.gid(),
-            "size": self.size(),
-            "blocks": self.block_count(),
-            "checksum": self.checksum(),
-            "file_acl": self.file_acl(),
+    /// String representation of an Inode using prettytable
+    pub fn to_string(&self) -> String {
+        let mut inode_table = Table::new();
 
-            // --- Booleans derived from i_mode ---
-            "is_dir": self.is_dir(),
-            "is_regular_file": self.is_regular_file(),
-            "is_symlink": self.is_symlink(),
-        })
+        inode_table.add_row(Row::new(vec![
+            Cell::new("Identifier"),
+            Cell::new(&format!("0x{:x}", self.i_num)),
+        ]));
+        inode_table.add_row(Row::new(vec![
+            Cell::new("Mode"),
+            Cell::new(&format!("0x{:x}", self.i_mode)),
+        ]));
+        inode_table.add_row(Row::new(vec![
+            Cell::new("Links Count"),
+            Cell::new(&format!("{}", self.i_links_count)),
+        ]));
+        inode_table.add_row(Row::new(vec![
+            Cell::new("Flags"),
+            Cell::new(&format!("0x{:x}", self.i_flags)),
+        ]));
+        inode_table.add_row(Row::new(vec![
+            Cell::new("atime (Change Time)"),
+            Cell::new(&self.i_atime_h),
+        ]));
+        inode_table.add_row(Row::new(vec![
+            Cell::new("ctime (Creation Time)"),
+            Cell::new(&self.i_ctime_h),
+        ]));
+        inode_table.add_row(Row::new(vec![
+            Cell::new("mtime (Modification Time)"),
+            Cell::new(&self.i_mtime_h),
+        ]));
+        inode_table.add_row(Row::new(vec![
+            Cell::new("dtime (Deletion Time)"),
+            Cell::new(&self.i_dtime_h),
+        ]));
+        inode_table.add_row(Row::new(vec![
+            Cell::new("Block Pointers"),
+            Cell::new(&format!("{:?}", self.block_pointers())),
+        ]));
+        inode_table.add_row(Row::new(vec![
+            Cell::new("Generation"),
+            Cell::new(&format!("0x{:x}", self.i_generation)),
+        ]));
+        inode_table.add_row(Row::new(vec![
+            Cell::new("extra_isize"),
+            Cell::new(&format!("0x{:x}", self.i_extra_isize)),
+        ]));
+        inode_table.add_row(Row::new(vec![
+            Cell::new("Project ID"),
+            Cell::new(&format!("0x{:x}", self.i_projid)),
+        ]));
+        inode_table.add_row(Row::new(vec![
+            Cell::new("UID"),
+            Cell::new(&format!("0x{:x}", self.uid())),
+        ]));
+        inode_table.add_row(Row::new(vec![
+            Cell::new("GID"),
+            Cell::new(&format!("0x{:x}", self.gid())),
+        ]));
+        inode_table.add_row(Row::new(vec![
+            Cell::new("Size"),
+            Cell::new(&format!("0x{:x}", self.size())),
+        ]));
+        inode_table.add_row(Row::new(vec![
+            Cell::new("Blocks"),
+            Cell::new(&format!("{}", self.block_count())),
+        ]));
+        inode_table.add_row(Row::new(vec![
+            Cell::new("Checksum"),
+            Cell::new(&format!("0x{:x}", self.checksum())),
+        ]));
+        inode_table.add_row(Row::new(vec![
+            Cell::new("File ACL"),
+            Cell::new(&format!("0x{:x}", self.file_acl())),
+        ]));
+        inode_table.add_row(Row::new(vec![
+            Cell::new("Dir?"),
+            Cell::new(&format!("{}", self.is_dir())),
+        ]));
+        inode_table.add_row(Row::new(vec![
+            Cell::new("Regular?"),
+            Cell::new(&format!("{}", self.is_regular_file())),
+        ]));
+        inode_table.add_row(Row::new(vec![
+            Cell::new("Symlink?"),
+            Cell::new(&format!("{}", self.is_symlink())),
+        ]));
+        // Timestamp rows
+        inode_table.add_row(Row::new(vec![
+            Cell::new("atime (raw)"),
+            Cell::new(&format!("0x{:x}", self.i_atime)),
+        ]));
+
+        inode_table.add_row(Row::new(vec![
+            Cell::new("ctime (raw)"),
+            Cell::new(&format!("0x{:x}", self.i_ctime)),
+        ]));
+
+        inode_table.add_row(Row::new(vec![
+            Cell::new("mtime (raw)"),
+            Cell::new(&format!("0x{:x}", self.i_mtime)),
+        ]));
+
+        inode_table.add_row(Row::new(vec![
+            Cell::new("dtime (raw)"),
+            Cell::new(&format!("0x{:x}", self.i_dtime)),
+        ]));
+
+        inode_table.add_row(Row::new(vec![
+            Cell::new("ctime_extra"),
+            Cell::new(&format!("0x{:x}", self.i_ctime_extra)),
+        ]));
+        inode_table.add_row(Row::new(vec![
+            Cell::new("mtime_extra"),
+            Cell::new(&format!("0x{:x}", self.i_mtime_extra)),
+        ]));
+        inode_table.add_row(Row::new(vec![
+            Cell::new("atime_extra"),
+            Cell::new(&format!("0x{:x}", self.i_atime_extra)),
+        ]));
+        inode_table.add_row(Row::new(vec![
+            Cell::new("crtime_extra"),
+            Cell::new(&format!("0x{:x}", self.i_crtime_extra)),
+        ]));
+        inode_table.to_string()
     }
 }

@@ -1,6 +1,11 @@
+/// Reference: https://www.kernel.org/doc/html/latest/filesystems/ext4/index.html
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+
 const INCOMPAT_FILETYPE: u32 = 0x2;
 
 // Structure representing a directory entry
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DirEntry {
     // Inode number associated with the directory entry
     pub inode: u32,
@@ -46,13 +51,15 @@ impl DirEntry {
         }
     }
 
-    /// Prints information about the directory entry
-    ///
-    /// The information includes the inode number, file name, and file type.
-    /// This function only prints if the name is not empty.
-    pub fn print_info(&self) {
+    pub fn to_string(&self) -> String {
         if !self.name.is_empty() {
-            println!("{} :  {} : 0x{:x}", self.inode, self.name, self.file_type);
+            format!("{} :  {} : 0x{:x}", self.inode, self.name, self.file_type)
+        } else {
+            format!("{} :  ? : 0x{:x}", self.inode, self.file_type)
         }
+    }
+
+    pub fn to_json(&self) -> Value {
+        serde_json::to_value(self).unwrap_or_else(|_| json!({}))
     }
 }
