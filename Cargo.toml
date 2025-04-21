@@ -6,10 +6,10 @@ description = "Extract Extended Filesystem specific artefacts from a Partition."
 documentation = "https://www.forensicxlab.com/docs/category/exhume---extfs"
 authors = ["k1nd0ne"]
 license = "GPL-2.0-or-later"
+readme = "README.md"
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
-exhume_partitions = "=0.1.0"
 exhume_body = "=0.1.1"
 log = "0.4.25"
 clap = "4.0"
