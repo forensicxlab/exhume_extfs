@@ -55,12 +55,14 @@ fn main() {
             Arg::new("dir_entry")
                 .short('d')
                 .long("dir_entry")
+                .requires("inode")
                 .action(ArgAction::SetTrue)
                 .help("If --inode is specified and it is a directory, list its directory entries."),
         )
         .arg(
             Arg::new("dump")
                 .long("dump")
+                .requires("inode")
                 .action(ArgAction::SetTrue)
                 .help("If --inode is specified, dump its content to a file named 'inode_<N>.bin'."),
         )
