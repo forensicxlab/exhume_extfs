@@ -6,73 +6,13 @@ use serde_json::{json, Value};
 use std::convert::TryInto;
 
 const EXT_MAGIC: u16 = 0xEF53;
-const EXT4_FEATURE_COMPAT_HAS_JOURNAL: u32 = 0x4;
-const EXT4_FEATURE_INCOMPAT_64BIT: u32 = 0x80000;
+pub const EXT4_FEATURE_COMPAT_HAS_JOURNAL: u32 = 0x4;
+pub const EXT4_FEATURE_INCOMPAT_64BIT: u32 = 0x80000;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Performance {
     pub s_prealloc_blocks: u8,
     pub s_prealloc_dir_blocks: u8,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Journaling {
-    pub s_journal_uuid: [u8; 16],
-    pub s_journal_inum: u32,
-    pub s_journal_dev: u32,
-    pub s_last_orphan: u32,
-    pub s_hash_seed: [u32; 4],
-    pub s_def_hash_version: u8,
-    pub s_jnl_backup_type: u8,
-    pub s_desc_size: u16,
-    pub s_default_mount_opts: u32,
-    pub s_first_meta_bg: u32,
-    pub s_mkfs_time: u64,
-    pub s_jnl_blocks: [u32; 17],
-}
-
-impl Journaling {
-    pub fn from_bytes(data: &[u8]) -> Self {
-        let le_u32 = |offset: usize| -> u32 {
-            u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap())
-        };
-        let le_u16 = |offset: usize| -> u16 {
-            u16::from_le_bytes(data[offset..offset + 2].try_into().unwrap())
-        };
-        let lo = le_u32(0x108) as u64;
-        Self {
-            s_journal_uuid: data[0xD0..0xE0].try_into().unwrap(),
-            s_journal_inum: le_u32(0xE0),
-            s_journal_dev: le_u32(0xE4),
-            s_last_orphan: le_u32(0xE8),
-            s_hash_seed: [le_u32(0xEC), le_u32(0xF0), le_u32(0xF4), le_u32(0xF8)],
-            s_def_hash_version: data[0xFC],
-            s_jnl_backup_type: data[0xFD],
-            s_desc_size: le_u16(0xFE),
-            s_default_mount_opts: le_u32(0x100),
-            s_first_meta_bg: le_u32(0x104),
-            s_mkfs_time: lo,
-            s_jnl_blocks: [
-                le_u32(0x10C),
-                le_u32(0x110),
-                le_u32(0x114),
-                le_u32(0x118),
-                le_u32(0x11C),
-                le_u32(0x120),
-                le_u32(0x124),
-                le_u32(0x128),
-                le_u32(0x12C),
-                le_u32(0x130),
-                le_u32(0x134),
-                le_u32(0x138),
-                le_u32(0x13C),
-                le_u32(0x140),
-                le_u32(0x144),
-                le_u32(0x148),
-                le_u32(0x14C),
-            ],
-        }
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -113,7 +53,6 @@ pub struct Superblock {
     pub s_last_mounted: Vec<u8>,
     pub s_algorithm_usage_bitmap: u32,
     pub s_performance: Performance,
-    pub s_journal: Option<Journaling>,
 }
 
 impl Superblock {
@@ -186,11 +125,6 @@ impl Superblock {
         let s_mtime = ((s_mtime_hi as u64) << 32) | (s_mtime_lo as u64);
         let s_wtime = ((s_wtime_hi as u64) << 32) | (s_wtime_lo as u64);
         let s_lastcheck = ((s_lastcheck_hi as u64) << 32) | (s_lastcheck_lo as u64);
-        let s_journal = if (s_feature_compat & EXT4_FEATURE_COMPAT_HAS_JOURNAL) != 0 {
-            Some(Journaling::from_bytes(data))
-        } else {
-            None
-        };
         Ok(Self {
             s_inodes_count,
             s_blocks_count,
@@ -228,7 +162,6 @@ impl Superblock {
             s_last_mounted,
             s_algorithm_usage_bitmap,
             s_performance,
-            s_journal,
         })
     }
 
@@ -246,15 +179,6 @@ impl Superblock {
 
     pub fn blocks_count(&self) -> u64 {
         self.s_blocks_count
-    }
-
-    pub fn descriptor_size(&self) -> usize {
-        let desc_size = self.s_journal.as_ref().map(|j| j.s_desc_size).unwrap_or(0);
-        if (self.s_feature_incompat & EXT4_FEATURE_INCOMPAT_64BIT) == 0 && desc_size >= 64 {
-            desc_size as usize
-        } else {
-            32
-        }
     }
 
     pub fn first_data_block(&self) -> usize {
@@ -437,18 +361,6 @@ impl Superblock {
             Cell::new("Performance - Prealloc Dir Blocks"),
             Cell::new(&self.s_performance.s_prealloc_dir_blocks.to_string()),
         ]));
-
-        if let Some(journal) = &self.s_journal {
-            table.add_row(Row::new(vec![
-                Cell::new("Journal UUID"),
-                Cell::new(&Self::format_uuid(&journal.s_journal_uuid)),
-            ]));
-            table.add_row(Row::new(vec![
-                Cell::new("Journal Inode Num"),
-                Cell::new(&journal.s_journal_inum.to_string()),
-            ]));
-            // Add more journal details if needed
-        }
 
         table.to_string()
     }

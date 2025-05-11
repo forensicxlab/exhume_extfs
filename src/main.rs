@@ -87,6 +87,19 @@ fn main() {
                 .default_value("info")
                 .help("Set the log verbosity level"),
         )
+        .arg(
+            Arg::new("recover")
+                .long("recover")
+                .action(ArgAction::SetTrue)
+                .help("Scan all free inodes and carve deleted files"),
+        )
+        .arg(
+            Arg::new("timeline")
+                .long("timeline")
+                .short('t')
+                .action(ArgAction::SetTrue)
+                .help("Print a JSON timeline assembled from the ext4 journal"),
+        )
         .get_matches();
 
     // Initialize logger.
@@ -112,6 +125,7 @@ fn main() {
     let show_dir_entry = matches.get_flag("dir_entry");
     let dump_content = matches.get_flag("dump");
     let json_output = matches.get_flag("json");
+    let recover_deleted = matches.get_flag("recover");
 
     // 1) Prepare the "body" and create an ExtFS instance.
     let mut body = Body::new(file_path.to_owned(), format);
@@ -220,6 +234,47 @@ fn main() {
                     error!("Cannot read content for inode {}: {}", inode_num, e);
                 }
             }
+        }
+    }
+
+    if recover_deleted {
+        info!("Scanning filesystem for deleted files…");
+        match filesystem.carve_deleted_files() {
+            Ok(recovered) => {
+                if json_output {
+                    let out: Vec<Value> = recovered
+                        .iter()
+                        .map(|rf| {
+                            json!({
+                                "inode":        rf.inode_num,
+                                "name":         rf.name,
+                                "size":         rf.size,
+                                "atime":        rf.atime,
+                                "mtime":        rf.mtime,
+                                "ctime":        rf.ctime,
+                                "deleted_time": rf.deleted_time
+                            })
+                        })
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&out).unwrap());
+                } else {
+                    info!("Recovered {} deleted file(s)", recovered.len());
+                    for rf in &recovered {
+                        let fname = rf
+                            .name
+                            .clone()
+                            .unwrap_or_else(|| format!("inode_{}.bin", rf.inode_num));
+                        println!(
+                            "inode {:>6}  {:<30}  ({} bytes)",
+                            rf.inode_num, fname, rf.size
+                        );
+                        if let Err(e) = std::fs::write(&fname, &rf.data) {
+                            error!("Could not save '{}': {}", fname, e);
+                        }
+                    }
+                }
+            }
+            Err(e) => error!("Recovery failed: {}", e),
         }
     }
 }

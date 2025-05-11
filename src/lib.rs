@@ -6,44 +6,93 @@ pub mod direntry;
 pub mod extent;
 pub mod groupdescriptor;
 pub mod inode;
+pub mod journal;
 pub mod superblock;
 
 use direntry::DirEntry;
 use extent::{ExtentHeader, ExtentIndex, ExtentLeaf};
 use groupdescriptor::GroupDescriptor;
 use inode::Inode;
-use superblock::Superblock;
+use journal::Journaling;
+use log::{info, warn};
 
+use std::collections::HashMap;
 use std::path::Path;
+use superblock::{Superblock, EXT4_FEATURE_COMPAT_HAS_JOURNAL, EXT4_FEATURE_INCOMPAT_64BIT};
 
-const INCOMPAT_EXTENTS: u32 = 0x40; // typical ext4 incompat flag for extents
-const EXT4_EXTENTS_FL: u32 = 0x00080000; // i_flags bit for extents
-const EXT4_INLINE_DATA_FL: u32 = 0x10000000; // i_flags bit for inline data (if enabled)
+const INCOMPAT_EXTENTS: u32 = 0x40;
+const EXT4_EXTENTS_FL: u32 = 0x00080000;
+const EXT4_INLINE_DATA_FL: u32 = 0x10000000;
+
+/// Result of a successful recovery attempt.
+#[derive(Debug)]
+pub struct RecoveredFile {
+    pub inode_num: u64,
+    /// File name carved from directory structures, if any.
+    pub name: Option<String>,
+    /// Raw file data (zeros are left in sparse regions).
+    pub data: Vec<u8>,
+    /// Convenience copies of useful metadata.
+    pub size: u64,
+    pub atime: String,
+    pub mtime: String,
+    pub ctime: String,
+    pub deleted_time: String,
+}
+
+trait BitmapExt {
+    fn is_bit_set(&self, bit_index: usize) -> bool;
+}
+
+impl BitmapExt for [u8] {
+    #[inline]
+    fn is_bit_set(&self, bit_index: usize) -> bool {
+        let byte = self[bit_index / 8];
+        let mask = 1u8 << (bit_index % 8);
+        byte & mask != 0
+    }
+}
 
 /// Struct representing an ext filesystem image.
 pub struct ExtFS<T: Read + Seek> {
     pub superblock: Superblock,
+    pub journal: Option<Journaling>,
     body: T,
 }
 
 impl<T: Read + Seek> ExtFS<T> {
     /// Create a new ExtFS instance given any type that implements `Read` and `Seek`.
     pub fn new(mut body: T) -> Result<Self, String> {
-        // Read the superblock at offset 0x400
         body.seek(SeekFrom::Start(0x400))
             .map_err(|e| e.to_string())?;
-        let mut sp_data = vec![0u8; 0x400];
-        body.read_exact(&mut sp_data).map_err(|e| e.to_string())?;
+        let mut sb_buf = vec![0u8; 0x400];
+        body.read_exact(&mut sb_buf).map_err(|e| e.to_string())?;
+        let superblock = Superblock::from_bytes(&sb_buf)?;
 
-        let superblock = match Superblock::from_bytes(&sp_data) {
-            Ok(sb) => sb,
-            Err(message) => {
-                eprintln!("{:?}", message);
-                return Err(message);
-            }
+        let journal = if (superblock.s_feature_compat & EXT4_FEATURE_COMPAT_HAS_JOURNAL) != 0 {
+            info!("Extended FileSystem Journaling feature is on.");
+            Some(Journaling::from_bytes(&sb_buf))
+        } else {
+            warn!("Journaling feature is not available.");
+            None
         };
 
-        Ok(ExtFS { superblock, body })
+        Ok(ExtFS {
+            superblock,
+            body,
+            journal,
+        })
+    }
+
+    pub fn descriptor_size(&self) -> usize {
+        let desc_size = self.journal.as_ref().map(|j| j.s_desc_size).unwrap_or(0);
+        if (self.superblock.s_feature_incompat & EXT4_FEATURE_INCOMPAT_64BIT) == 0
+            && desc_size >= 64
+        {
+            desc_size as usize
+        } else {
+            32
+        }
     }
 
     pub fn total_inodes(&self) -> u64 {
@@ -54,7 +103,7 @@ impl<T: Read + Seek> ExtFS<T> {
     fn bg_desc_offset(&self) -> u64 {
         let bs = self.superblock.block_size();
         // If the filesystem block size is 1 KiB, group desc table is at 2048.
-        // Otherwise (2 KiB, 4 KiB, etc.), the group desc table is at the next block.
+        // Otherwise (2 KiB, 4 KiB, etc.), the group desc table is at the next block.
         if bs == 1024 {
             2048
         } else {
@@ -67,7 +116,7 @@ impl<T: Read + Seek> ExtFS<T> {
         &mut self,
         group_index: u64,
     ) -> Result<GroupDescriptor, Box<dyn Error>> {
-        let desc_size = self.superblock.descriptor_size();
+        let desc_size = self.descriptor_size();
         let offset = self.bg_desc_offset() + (group_index as u64) * (desc_size as u64);
 
         // Seek and read desc_size bytes
@@ -119,6 +168,16 @@ impl<T: Read + Seek> ExtFS<T> {
         self.body.seek(SeekFrom::Start(offset))?;
         self.body.read_exact(&mut buf)?;
         Ok(buf)
+    }
+
+    fn _journal_inode(&mut self) -> Result<inode::Inode, Box<dyn std::error::Error>> {
+        let js = self.journal.as_ref().ok_or("filesystem has no journal")?;
+
+        if js.s_journal_dev != 0 {
+            return Err("external journals are not handled yet".into());
+        }
+        info!("Getting journal inode number");
+        self.get_inode(js.s_journal_inum as u64)
     }
 
     /// Parse extents to collect all runs as (logical_block, physical_block, length).
@@ -291,7 +350,7 @@ impl<T: Read + Seek> ExtFS<T> {
     }
 
     // -------------------------------------------------------------------------
-    // 3. Read the content of a file (or directory) from the given inode.
+    // Read the content of a file (or directory) from the given inode.
     // -------------------------------------------------------------------------
     pub fn read_inode(&mut self, inode: &Inode) -> Result<Vec<u8>, Box<dyn Error>> {
         // Corner case #1: Small symlink content is stored in i_block if the symlink is short.
@@ -556,5 +615,116 @@ impl<T: Read + Seek> ExtFS<T> {
         };
 
         (parent, filename)
+    }
+
+    /// Total number of block / inode groups in this FS.
+    fn group_count(&self) -> u64 {
+        let ipg = self.superblock.inodes_per_group() as u64;
+        (self.superblock.s_inodes_count + ipg - 1) / ipg
+    }
+
+    /// Read the raw inode bitmap for a given group.
+    fn read_inode_bitmap(&mut self, group_index: u64) -> Result<Vec<u8>, Box<dyn Error>> {
+        let gd = self.read_group_descriptor(group_index)?;
+        self.read_block(gd.bg_inode_bitmap)
+    }
+
+    /// Lightweight sanity‑check.  Returns true if the inode looks like a
+    /// valid deleted file we might want to carve.
+    fn inode_looks_promising(&self, ino: &Inode) -> bool {
+        // Size must be non‑zero and not outrageously large (<= FS size).
+        if ino.size() == 0
+            || ino.size() > (self.superblock.blocks_count() * self.superblock.block_size())
+        {
+            return false;
+        }
+        // Some block pointer (direct or via extent) must be inside bounds.
+        let has_ptr = ino
+            .block_pointers()
+            .iter()
+            .any(|&b| b as u64 > 0 && (b as u64) < self.superblock.blocks_count());
+        let has_extent_flag = (ino.flag() & crate::EXT4_EXTENTS_FL) != 0;
+        has_ptr || has_extent_flag
+    }
+
+    fn build_dir_index(&mut self) -> Result<HashMap<u64, Vec<String>>, Box<dyn Error>> {
+        let mut index: HashMap<u64, Vec<String>> = HashMap::new();
+        for ino_num in 2..=self.superblock.s_inodes_count {
+            let dir_inode = match self.get_inode(ino_num) {
+                Ok(i) if i.is_dir() => i,
+                _ => continue,
+            };
+            for de in self.list_dir(&dir_inode)? {
+                if de.inode == 0 {
+                    continue;
+                }
+                index
+                    .entry(de.inode as u64)
+                    .or_insert_with(Vec::new)
+                    .push(de.name);
+            }
+        }
+        Ok(index)
+    }
+
+    /// Returns a list of inode numbers that are free (bit == 0 in bitmap)
+    /// but whose on‑disk inode satisfies inode_looks_promising.
+    pub fn collect_promising_free_inodes(&mut self) -> Result<Vec<u64>, Box<dyn Error>> {
+        let mut victims = Vec::new();
+        let ipg = self.superblock.inodes_per_group() as usize;
+        for grp_idx in 0..self.group_count() {
+            let bitmap = self.read_inode_bitmap(grp_idx)?;
+            for local_idx in 0..ipg {
+                if bitmap.is_bit_set(local_idx) {
+                    continue;
+                } // allocated
+                let ino_num = grp_idx as usize * ipg + local_idx + 1;
+                if ino_num < 2 || ino_num as u64 > self.superblock.s_inodes_count {
+                    continue;
+                }
+                let inode = self.get_inode(ino_num as u64)?;
+                if self.inode_looks_promising(&inode) {
+                    victims.push(ino_num as u64);
+                }
+            }
+        }
+        Ok(victims)
+    }
+
+    /// Reconstruct one deleted file given its inode number.
+    pub fn recover_deleted_file(
+        &mut self,
+        inode_num: u64,
+        dir_index: &HashMap<u64, Vec<String>>,
+    ) -> Result<RecoveredFile, Box<dyn Error>> {
+        let inode = self.get_inode(inode_num)?;
+        if !self.inode_looks_promising(&inode) {
+            return Err("inode fails recovery heuristics".into());
+        }
+        let data = self.read_inode(&inode)?;
+        let name = dir_index.get(&inode_num).and_then(|v| v.first()).cloned();
+        Ok(RecoveredFile {
+            inode_num,
+            name,
+            data,
+            size: inode.size(),
+            atime: inode.i_atime_h.clone(),
+            mtime: inode.i_mtime_h.clone(),
+            ctime: inode.i_ctime_h.clone(),
+            deleted_time: inode.i_dtime_h.clone(),
+        })
+    }
+
+    /// Walks the entire filesystem and returns a vector of all successfully
+    /// carved files.
+    pub fn carve_deleted_files(&mut self) -> Result<Vec<RecoveredFile>, Box<dyn Error>> {
+        let dir_index = self.build_dir_index()?;
+        let mut carved = Vec::new();
+        for ino_num in self.collect_promising_free_inodes()? {
+            if let Ok(rf) = self.recover_deleted_file(ino_num, &dir_index) {
+                carved.push(rf);
+            }
+        }
+        Ok(carved)
     }
 }

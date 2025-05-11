@@ -4,19 +4,19 @@ use serde_json::{json, Value};
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GroupDescriptor {
     // Full 64-bit block number for the block bitmap.
-    bg_block_bitmap: u64,
+    pub bg_block_bitmap: u64,
     // Full 64-bit block number for the inode bitmap.
-    bg_inode_bitmap: u64,
+    pub bg_inode_bitmap: u64,
     // Full 64-bit block number for the inode table.
-    bg_inode_table: u64,
+    pub bg_inode_table: u64,
     // Lower 16 bits of free blocks count (plus optional upper bits).
-    bg_free_blocks_count: u32,
+    pub bg_free_blocks_count: u32,
     // Lower 16 bits of free inodes count (plus optional upper bits).
-    bg_free_inodes_count: u32,
+    pub bg_free_inodes_count: u32,
     // Lower 16 bits of used directories count (plus optional upper bits).
-    bg_used_dirs_count: u32,
+    pub bg_used_dirs_count: u32,
     // Flags (lower 16 bits from older layout).
-    bg_flags: u16,
+    pub bg_flags: u16,
 }
 
 impl GroupDescriptor {
