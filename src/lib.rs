@@ -8,17 +8,22 @@ pub mod groupdescriptor;
 pub mod inode;
 pub mod journal;
 pub mod superblock;
+pub mod timeline;
 
 use direntry::DirEntry;
 use extent::{ExtentHeader, ExtentIndex, ExtentLeaf};
 use groupdescriptor::GroupDescriptor;
-use inode::Inode;
-use journal::Journaling;
-use log::{info, warn};
+use inode::{mode_to_string, Inode};
+use log::{error, info};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use superblock::{Superblock, EXT4_FEATURE_COMPAT_HAS_JOURNAL, EXT4_FEATURE_INCOMPAT_64BIT};
+use superblock::{Superblock, EXT4_FEATURE_INCOMPAT_64BIT};
+
+use journal::{
+    JournalBlockHeader, JournalBlockType, JournalCommitBlock, JournalDescriptorBlock,
+    JournalSuperblock,
+};
 
 const INCOMPAT_EXTENTS: u32 = 0x40;
 const EXT4_EXTENTS_FL: u32 = 0x00080000;
@@ -56,7 +61,6 @@ impl BitmapExt for [u8] {
 /// Struct representing an ext filesystem image.
 pub struct ExtFS<T: Read + Seek> {
     pub superblock: Superblock,
-    pub journal: Option<Journaling>,
     body: T,
 }
 
@@ -69,23 +73,16 @@ impl<T: Read + Seek> ExtFS<T> {
         body.read_exact(&mut sb_buf).map_err(|e| e.to_string())?;
         let superblock = Superblock::from_bytes(&sb_buf)?;
 
-        let journal = if (superblock.s_feature_compat & EXT4_FEATURE_COMPAT_HAS_JOURNAL) != 0 {
-            info!("Extended FileSystem Journaling feature is on.");
-            Some(Journaling::from_bytes(&sb_buf))
-        } else {
-            warn!("Journaling feature is not available.");
-            None
-        };
-
-        Ok(ExtFS {
-            superblock,
-            body,
-            journal,
-        })
+        Ok(ExtFS { superblock, body })
     }
 
     pub fn descriptor_size(&self) -> usize {
-        let desc_size = self.journal.as_ref().map(|j| j.s_desc_size).unwrap_or(0);
+        let desc_size = self
+            .superblock
+            .s_journaling
+            .as_ref()
+            .map(|j| j.s_desc_size)
+            .unwrap_or(0);
         if (self.superblock.s_feature_incompat & EXT4_FEATURE_INCOMPAT_64BIT) == 0
             && desc_size >= 64
         {
@@ -171,7 +168,11 @@ impl<T: Read + Seek> ExtFS<T> {
     }
 
     fn _journal_inode(&mut self) -> Result<inode::Inode, Box<dyn std::error::Error>> {
-        let js = self.journal.as_ref().ok_or("filesystem has no journal")?;
+        let js = self
+            .superblock
+            .s_journaling
+            .as_ref()
+            .ok_or("filesystem has no journal")?;
 
         if js.s_journal_dev != 0 {
             return Err("external journals are not handled yet".into());
@@ -727,4 +728,286 @@ impl<T: Read + Seek> ExtFS<T> {
         }
         Ok(carved)
     }
+
+    /// Read the entire JBD2 area into memory, returning it as a Vec<u8>.
+    /// Currently works for the common “internal journal file” case tested.
+    /// We can work on the external device feature in a futur version.
+    /// journals will return “not supported” for now.
+    pub fn read_journal_bytes(&mut self) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let js = self
+            .superblock
+            .s_journaling
+            .as_ref()
+            .ok_or("filesystem has no journal")?;
+
+        if js.s_journal_dev != 0 {
+            // TODO: Plug external-device support here later
+            error!("external journals are not handled yet");
+            return Err("external journals are not handled yet".into());
+        }
+
+        let j_inode = self.get_inode(js.s_journal_inum as u64)?;
+
+        let mut buf = self.read_inode(&j_inode)?;
+
+        if buf.len() >= 4096 {
+            let jsb = JournalSuperblock::from_bytes(&buf[..4096]);
+            let wanted = jsb.s_maxlen as usize * jsb.s_blocksize as usize;
+            if buf.len() > wanted {
+                buf.truncate(wanted);
+            } else if buf.len() < wanted {
+                buf.resize(wanted, 0); // zero-pad sparse tail
+            }
+        }
+
+        Ok(buf)
+    }
+
+    /// Walk the journal, infer create / chmod / delete and return a timeline.
+    pub fn build_timeline(
+        &mut self,
+    ) -> Result<Vec<timeline::TimelineEvent>, Box<dyn std::error::Error>>
+    where
+        T: std::io::Read + std::io::Seek,
+    {
+        use crate::timeline::TimelineEvent;
+
+        //  Load full journal
+        let jbytes = self.read_journal_bytes()?;
+
+        let jsb = JournalSuperblock::from_bytes(&jbytes[..4096]);
+        let jblk_sz = jsb.s_blocksize as usize;
+
+        let mut it_ranges = Vec::new(); // (first,last,inode#-base)
+        for grp in 0..self.group_count() {
+            let gd = self.read_group_descriptor(grp)?;
+            let (first, last) = gd.inode_table_span(&self.superblock);
+            let base_inode = grp * self.superblock.inodes_per_group() as u64;
+            it_ranges.push((first, last, base_inode));
+        }
+
+        // Previous inode snapshot (link_count, mode)
+        let mut inode_state: HashMap<u64, (u16, u16)> = HashMap::new();
+
+        let mut out: Vec<TimelineEvent> = Vec::new();
+
+        let mut idx = 0;
+        while idx * jblk_sz < jbytes.len() {
+            let hdr = JournalBlockHeader::from_bytes(&jbytes[idx * jblk_sz..]);
+
+            if hdr.h_blocktype == JournalBlockType::Descriptor {
+                // Collect the whole Tx (tags + data + commit)
+                let desc =
+                    JournalDescriptorBlock::from_bytes(&jbytes[idx * jblk_sz..], jsb.has_64bit());
+                let mut data_blocks = Vec::new();
+                for (ofs, tag) in desc.tags.iter().enumerate() {
+                    let jofs = (idx + 1 + ofs) * jblk_sz;
+                    data_blocks.push((tag.blocknr as u64, &jbytes[jofs..jofs + jblk_sz]));
+                }
+                // commit block follows right after the data blocks
+                let com_idx = idx + 1 + desc.tags.len();
+                let com_hdr = JournalCommitBlock::from_bytes(
+                    &jbytes[com_idx * jblk_sz..com_idx * jblk_sz + jblk_sz],
+                );
+
+                // For every data block that is part of an inode table.
+                for (phys_bn, buf) in data_blocks {
+                    // Inode-table block?
+                    if let Some((_grp_idx, base_inode)) =
+                        it_ranges.iter().enumerate().find_map(|(g, &(f, l, base))| {
+                            if phys_bn >= f && phys_bn <= l {
+                                Some((g, base))
+                            } else {
+                                None
+                            }
+                        })
+                    {
+                        let inodes_per_block =
+                            self.superblock.block_size() as usize / self.superblock.inode_size();
+                        for i in 0..inodes_per_block {
+                            let off = i * self.superblock.inode_size();
+                            let raw = &buf[off..off + self.superblock.inode_size()];
+                            // In use ?
+                            let mode = u16::from_le_bytes(raw[0..2].try_into().unwrap());
+                            let links = u16::from_le_bytes(raw[0x1A..0x1C].try_into().unwrap());
+                            let size_lo = u32::from_le_bytes(raw[4..8].try_into().unwrap());
+                            if mode == 0 && links == 0 && size_lo == 0 {
+                                continue; // unused, skip
+                            }
+                            let inode_num = base_inode + (i as u64) + 1; // +1 because inode numbers start at 1
+
+                            // Parse the inode
+                            let ino = Inode::from_bytes(
+                                inode_num,
+                                raw,
+                                self.superblock.inode_size() as u64,
+                            );
+
+                            // We can now make a comparaison with the previous snapshot
+                            match inode_state.get_mut(&inode_num) {
+                                None => {
+                                    // Treat as CREATE if links>0
+                                    if ino.i_links_count > 0 {
+                                        let mut ev = TimelineEvent::new(
+                                            hdr.h_sequence,
+                                            com_hdr.commit_sec,
+                                            com_hdr.commit_nsec,
+                                            "create",
+                                            format!("inode {}", inode_num),
+                                        );
+                                        ev.details.insert("mode", format!("{:o}", ino.mode()));
+                                        ev.details.insert("size", ino.size().to_string());
+                                        out.push(ev);
+                                    }
+                                    inode_state.insert(inode_num, (ino.i_links_count, ino.mode()));
+                                }
+                                Some((prev_links, prev_mode)) => {
+                                    // Detect state changes
+                                    if *prev_links > 0 && ino.i_links_count == 0 {
+                                        out.push(TimelineEvent::new(
+                                            hdr.h_sequence,
+                                            com_hdr.commit_sec,
+                                            com_hdr.commit_nsec,
+                                            "delete",
+                                            format!("inode {}", inode_num),
+                                        ));
+                                    } else if *prev_mode != ino.mode() {
+                                        let mut ev = TimelineEvent::new(
+                                            hdr.h_sequence,
+                                            com_hdr.commit_sec,
+                                            com_hdr.commit_nsec,
+                                            "chmod",
+                                            format!("inode {}", inode_num),
+                                        );
+                                        ev.details.insert("old", format!("{:o}", *prev_mode));
+                                        ev.details.insert("new", format!("{:o}", ino.mode()));
+                                        ev.details.insert("old_sym", mode_to_string(*prev_mode));
+                                        ev.details.insert("new_sym", mode_to_string(ino.mode()));
+                                        out.push(ev);
+                                    }
+                                    *prev_links = ino.i_links_count;
+                                    *prev_mode = ino.mode();
+                                }
+                            }
+                        }
+                    }
+                }
+                idx = com_idx + 1;
+            } else {
+                idx += 1;
+            }
+        }
+
+        // Sorting
+        out.sort_by_key(|e| e.tx_seq);
+        Ok(out)
+    }
+}
+
+// A single Journal Block Entry
+#[derive(Debug)]
+pub struct JournalBlockEntry {
+    pub index: usize,
+    pub description: String,
+}
+
+/// Walk every block in the journal and build a printable listing.
+pub fn list_journal_blocks(journal: &[u8]) -> Vec<JournalBlockEntry> {
+    let sb = JournalSuperblock::from_bytes(&journal[..4096]);
+    let block_size = sb.s_blocksize as usize;
+    let max_blocks = sb.s_maxlen as usize;
+    let has_64bit = sb.has_64bit();
+
+    let mut lines = Vec::<JournalBlockEntry>::with_capacity(max_blocks);
+    let mut visited: HashSet<usize> = HashSet::new();
+
+    // This is inspired by "jls" from the sleuthkit to demonstrate the output comparaison when we will signal the nsec parsing mistake.
+    lines.push(JournalBlockEntry {
+        index: 0,
+        description: format!(
+            "Superblock (seq: {})\nsb version: {}\nsb feature_compat flags 0x{:08X}\nsb feature_incompat flags 0x{:08X}\n        {}\nsb feature_ro_incompat flags 0x{:08X}",
+            sb.s_sequence,
+            if sb.header.h_blocktype == JournalBlockType::SuperblockV2 { 4 } else { 2 },
+            sb.s_feature_compat,
+            sb.s_feature_incompat,
+            if sb.has_64bit() { "JOURNAL_64BIT" } else { "" },
+            sb.s_feature_ro_compat
+        ),
+    });
+
+    let mut blk = 1;
+    while blk < max_blocks && (blk + 1) * block_size <= journal.len() {
+        if visited.contains(&blk) {
+            blk += 1;
+            continue;
+        }
+
+        let start = blk * block_size;
+        let end = start + block_size;
+        let buf = &journal[start..end];
+        let hdr = JournalBlockHeader::from_bytes(buf);
+
+        match hdr.h_blocktype {
+            JournalBlockType::Descriptor => {
+                let desc = JournalDescriptorBlock::from_bytes(buf, has_64bit);
+                lines.push(JournalBlockEntry {
+                    index: blk,
+                    description: format!("Unallocated Descriptor Block (seq: {})", hdr.h_sequence),
+                });
+
+                // Each tag data block follows immediately after the descriptor.
+                for (ofs, tag) in desc.tags.iter().enumerate() {
+                    let data_blk_idx = blk + ofs + 1;
+                    visited.insert(data_blk_idx);
+
+                    let fs_description = if tag.blocknr == 0 {
+                        "Unknown".to_string()
+                    } else {
+                        tag.blocknr.to_string()
+                    };
+
+                    lines.push(JournalBlockEntry {
+                        index: data_blk_idx,
+                        description: format!("Unallocated FS Block {}", fs_description),
+                    });
+                }
+            }
+
+            JournalBlockType::Commit => {
+                let com = JournalCommitBlock::from_bytes(buf);
+                lines.push(JournalBlockEntry {
+                    index: blk,
+                    description: format!(
+                        "Unallocated Commit Block (seq: {}, sec: {}.{})",
+                        hdr.h_sequence, com.commit_sec, com.commit_nsec
+                    ),
+                });
+            }
+
+            JournalBlockType::SuperblockV1 | JournalBlockType::SuperblockV2 => {
+                lines.push(JournalBlockEntry {
+                    index: blk,
+                    description: format!("Shadow Superblock (seq: {})", hdr.h_sequence),
+                });
+            }
+
+            JournalBlockType::Revoke => {
+                lines.push(JournalBlockEntry {
+                    index: blk,
+                    description: "Unallocated Revocation Block".into(),
+                });
+            }
+
+            _ => {
+                lines.push(JournalBlockEntry {
+                    index: blk,
+                    description: "Unallocated / Unknown".into(),
+                });
+            }
+        }
+
+        blk += 1;
+    }
+
+    lines
 }

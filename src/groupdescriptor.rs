@@ -104,6 +104,17 @@ impl GroupDescriptor {
         self.bg_inode_table
     }
 
+    /// Number of blocks occupied by this group’s inode table
+    pub fn inode_table_span(
+        &self,
+        sb: &crate::superblock::Superblock,
+    ) -> (u64 /*first*/, u64 /*last-inclusive*/) {
+        let first = self.bg_inode_table() as u64;
+        let blks = (sb.inodes_per_group() as u64 * sb.inode_size() as u64 + sb.block_size() - 1)
+            / sb.block_size();
+        (first, first + blks - 1)
+    }
+
     pub fn to_json(&self) -> Value {
         serde_json::to_value(self).unwrap_or_else(|_| json!({}))
     }

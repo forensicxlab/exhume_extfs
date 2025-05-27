@@ -1,8 +1,10 @@
-use prettytable::{Cell, Row, Table};
 /// Reference: https://www.kernel.org/doc/html/v4.19/filesystems/ext4/ondisk/index.html#super-block
+use crate::journal::Journaling;
+use chrono::{TimeZone, Utc};
+use log::{info, warn};
+use prettytable::{Cell, Row, Table};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-
 use std::convert::TryInto;
 
 const EXT_MAGIC: u16 = 0xEF53;
@@ -53,6 +55,7 @@ pub struct Superblock {
     pub s_last_mounted: Vec<u8>,
     pub s_algorithm_usage_bitmap: u32,
     pub s_performance: Performance,
+    pub s_journaling: Option<Journaling>, //See journal.rs
 }
 
 impl Superblock {
@@ -125,6 +128,15 @@ impl Superblock {
         let s_mtime = ((s_mtime_hi as u64) << 32) | (s_mtime_lo as u64);
         let s_wtime = ((s_wtime_hi as u64) << 32) | (s_wtime_lo as u64);
         let s_lastcheck = ((s_lastcheck_hi as u64) << 32) | (s_lastcheck_lo as u64);
+
+        let s_journaling = if (s_feature_compat & EXT4_FEATURE_COMPAT_HAS_JOURNAL) != 0 {
+            info!("Extended FileSystem Journaling feature is on.");
+            Some(Journaling::from_bytes(&data))
+        } else {
+            warn!("Journaling feature is not available.");
+            None
+        };
+
         Ok(Self {
             s_inodes_count,
             s_blocks_count,
@@ -162,6 +174,7 @@ impl Superblock {
             s_last_mounted,
             s_algorithm_usage_bitmap,
             s_performance,
+            s_journaling,
         })
     }
 
@@ -259,11 +272,23 @@ impl Superblock {
         ]));
         table.add_row(Row::new(vec![
             Cell::new("Mount Time"),
-            Cell::new(&self.s_mtime.to_string()),
+            Cell::new(&format!(
+                "{:?}",
+                Utc.timestamp_opt(self.s_mtime as i64, 0)
+                    .single()
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_default()
+            )),
         ]));
         table.add_row(Row::new(vec![
             Cell::new("Write Time"),
-            Cell::new(&self.s_wtime.to_string()),
+            Cell::new(&format!(
+                "{:?}",
+                Utc.timestamp_opt(self.s_wtime as i64, 0)
+                    .single()
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_default()
+            )),
         ]));
         table.add_row(Row::new(vec![
             Cell::new("Mount Count"),
@@ -362,6 +387,69 @@ impl Superblock {
             Cell::new(&self.s_performance.s_prealloc_dir_blocks.to_string()),
         ]));
 
+        // Optionnal display: If the journal is present, we display the Journal section !
+        if let Some(journaling) = &self.s_journaling {
+            table.add_row(Row::new(vec![
+                Cell::new("Journaling - Journal UUID"),
+                Cell::new(&Self::format_uuid(&journaling.s_journal_uuid)),
+            ]));
+
+            table.add_row(Row::new(vec![
+                Cell::new("Journaling - Journal Inode Number"),
+                Cell::new(&journaling.s_journal_inum.to_string()),
+            ]));
+
+            table.add_row(Row::new(vec![
+                Cell::new("Journaling - Device number"),
+                Cell::new(&journaling.s_journal_dev.to_string()),
+            ]));
+
+            table.add_row(Row::new(vec![
+                Cell::new("Journaling - Orphaned Inodes List offset"),
+                Cell::new(&journaling.s_last_orphan.to_string()),
+            ]));
+
+            table.add_row(Row::new(vec![
+                Cell::new("Journaling - HTREE hash seed"),
+                Cell::new(&format!("{:?}", journaling.s_hash_seed)),
+            ]));
+
+            table.add_row(Row::new(vec![
+                Cell::new("Journaling - Default hash algorithm"),
+                Cell::new(&journaling.s_def_hash_version.to_string()),
+            ]));
+
+            table.add_row(Row::new(vec![
+                Cell::new("Journaling - Backup Type"),
+                Cell::new(&journaling.s_jnl_backup_type.to_string()),
+            ]));
+
+            table.add_row(Row::new(vec![
+                Cell::new("Journaling - Descriptor Size"),
+                Cell::new(&journaling.s_desc_size.to_string()),
+            ]));
+
+            table.add_row(Row::new(vec![
+                Cell::new("Journaling - Mount options"),
+                Cell::new(&journaling.s_default_mount_opts.to_string()),
+            ]));
+
+            table.add_row(Row::new(vec![
+                Cell::new("Journaling - First metablock block group"),
+                Cell::new(&journaling.s_first_meta_bg.to_string()),
+            ]));
+
+            table.add_row(Row::new(vec![
+                Cell::new("Journaling - FileSystem Creation Date"),
+                Cell::new(&format!(
+                    "{:?}",
+                    Utc.timestamp_opt(journaling.s_mkfs_time as i64, 0)
+                        .single()
+                        .map(|dt| dt.to_rfc3339())
+                        .unwrap_or_default()
+                )),
+            ]));
+        }
         table.to_string()
     }
 }

@@ -44,6 +44,83 @@ pub struct Inode {
     pub i_projid: u32,
 }
 
+/// Convert an ext-mode (includes file-type bits) into the familiar
+/// 10-character string used by `ls -l`, e.g. "-rw-r--r--".
+pub fn mode_to_string(mode: u16) -> String {
+    const S_IFMT: u16 = 0o170000;
+    const S_IFSOCK: u16 = 0o140000;
+    const S_IFLNK: u16 = 0o120000;
+    const S_IFREG: u16 = 0o100000;
+    const S_IFBLK: u16 = 0o060000;
+    const S_IFDIR: u16 = 0o040000;
+    const S_IFCHR: u16 = 0o020000;
+    const S_IFIFO: u16 = 0o010000;
+
+    const S_ISUID: u16 = 0o4000;
+    const S_ISGID: u16 = 0o2000;
+    const S_ISVTX: u16 = 0o1000;
+
+    let file_ch = match mode & S_IFMT {
+        S_IFSOCK => 's',
+        S_IFLNK => 'l',
+        S_IFREG => '-',
+        S_IFBLK => 'b',
+        S_IFDIR => 'd',
+        S_IFCHR => 'c',
+        S_IFIFO => 'p',
+        _ => '?',
+    };
+
+    let mut buf = [b'-'; 9];
+
+    // user
+    if mode & 0o400 != 0 {
+        buf[0] = b'r';
+    }
+    if mode & 0o200 != 0 {
+        buf[1] = b'w';
+    }
+    if mode & 0o100 != 0 {
+        buf[2] = b'x';
+    }
+    // group
+    if mode & 0o040 != 0 {
+        buf[3] = b'r';
+    }
+    if mode & 0o020 != 0 {
+        buf[4] = b'w';
+    }
+    if mode & 0o010 != 0 {
+        buf[5] = b'x';
+    }
+    // other
+    if mode & 0o004 != 0 {
+        buf[6] = b'r';
+    }
+    if mode & 0o002 != 0 {
+        buf[7] = b'w';
+    }
+    if mode & 0o001 != 0 {
+        buf[8] = b'x';
+    }
+
+    // special bits
+    if mode & S_ISUID != 0 {
+        buf[2] = if buf[2] == b'x' { b's' } else { b'S' };
+    }
+    if mode & S_ISGID != 0 {
+        buf[5] = if buf[5] == b'x' { b's' } else { b'S' };
+    }
+    if mode & S_ISVTX != 0 {
+        buf[8] = if buf[8] == b'x' { b't' } else { b'T' };
+    }
+
+    let mut s = String::with_capacity(10);
+    s.push(file_ch);
+    s.push_str(std::str::from_utf8(&buf).unwrap());
+    s
+}
+
 impl Inode {
     pub fn from_bytes(i_num: u64, data: &[u8], inode_size: u64) -> Self {
         // Some helper functions to read u16 and u32. We could use Cursor in the futur that could be good.

@@ -73,6 +73,12 @@ fn main() {
                 .help("Display the superblock information."),
         )
         .arg(
+            Arg::new("journal")
+                .long("journal")
+                .action(ArgAction::SetTrue)
+                .help("Display the journal superblock."),
+        )
+        .arg(
             Arg::new("json")
                 .short('j')
                 .long("json")
@@ -97,6 +103,7 @@ fn main() {
             Arg::new("timeline")
                 .long("timeline")
                 .short('t')
+                .requires("journal")
                 .action(ArgAction::SetTrue)
                 .help("Print a JSON timeline assembled from the ext4 journal"),
         )
@@ -121,6 +128,7 @@ fn main() {
     let size = matches.get_one::<u64>("size").unwrap();
 
     let show_superblock = matches.get_flag("superblock");
+    let journal = matches.get_flag("journal");
     let inode_num = matches.get_one::<usize>("inode").copied().unwrap_or(0);
     let show_dir_entry = matches.get_flag("dir_entry");
     let dump_content = matches.get_flag("dump");
@@ -156,6 +164,47 @@ fn main() {
             }
         } else {
             println!("{}", filesystem.superblock.to_string());
+        }
+    }
+
+    if journal {
+        if matches.get_flag("timeline") {
+            match filesystem.build_timeline() {
+                Ok(tl) => {
+                    if json_output {
+                        println!("{}", serde_json::to_string_pretty(&tl).unwrap());
+                    } else {
+                        for ev in tl {
+                            let extra = match ev.action.as_str() {
+                                "chmod" => format!(
+                                    " {} → {}",
+                                    ev.details.get("old_sym").unwrap(),
+                                    ev.details.get("new_sym").unwrap()
+                                ),
+                                _ => String::new(),
+                            };
+                            println!("{}  Tx-{}  {} {}", ev.ts, ev.tx_seq, ev.action, ev.target);
+                            if !extra.is_empty() {
+                                println!("            {}", extra);
+                            }
+                        }
+                    }
+                }
+                Err(e) => error!("Timeline build failed: {}", e),
+            }
+        } else {
+            match filesystem.read_journal_bytes() {
+                Ok(jbytes) => {
+                    for entry in exhume_extfs::list_journal_blocks(&jbytes) {
+                        println!(
+                            "{:<6}:  {}",
+                            entry.index,
+                            entry.description.replace('\n', "\n        ")
+                        );
+                    }
+                }
+                Err(e) => error!("Could not read journal: {}", e),
+            }
         }
     }
 
