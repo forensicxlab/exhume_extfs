@@ -76,7 +76,7 @@ fn main() {
             Arg::new("journal")
                 .long("journal")
                 .action(ArgAction::SetTrue)
-                .help("Display the journal superblock."),
+                .help("Display the journal block listing (jls)."),
         )
         .arg(
             Arg::new("json")
