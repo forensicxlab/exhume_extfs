@@ -1,3 +1,5 @@
+//! Extent tree structures for **ext4**.
+
 #[derive(Debug)]
 /// A structure representing an Extent Header block in an ext4 filesystem.
 pub struct ExtentHeader {
@@ -12,66 +14,45 @@ pub struct ExtentHeader {
 }
 
 impl ExtentHeader {
-    /// Creates an ExtentHeader from a slice of bytes.
-    ///
-    /// # Arguments
-    ///
-    /// * `data` - A byte slice from which the ExtentHeader will be created.
-    ///
-    /// # Returns
-    ///
-    /// An instance of ExtentHeader filled with values from the byte slice.
-    pub fn from_bytes(data: &[u8]) -> ExtentHeader {
-        let eh_magic = u16::from_le_bytes(data[0x0..0x2].try_into().unwrap());
-        ExtentHeader {
-            eh_magic,
-            eh_entries: u16::from_le_bytes(data[0x2..0x4].try_into().unwrap()),
-            eh_max: u16::from_le_bytes(data[0x4..0x6].try_into().unwrap()),
-            eh_depth: u16::from_le_bytes(data[0x6..0x8].try_into().unwrap()),
+    /// Parse an ['ExtentHeader'] from *exactly* the first 8 bytes of a node.
+    #[must_use]
+    pub fn from_bytes(data: &[u8]) -> Self {
+        Self {
+            eh_magic: u16::from_le_bytes(data[0..2].try_into().unwrap()),
+            eh_entries: u16::from_le_bytes(data[2..4].try_into().unwrap()),
+            eh_max: u16::from_le_bytes(data[4..6].try_into().unwrap()),
+            eh_depth: u16::from_le_bytes(data[6..8].try_into().unwrap()),
         }
     }
 
-    /// Checks if the extent is a leaf node.
-    ///
-    /// # Returns
-    ///
-    /// `true` if the extent is a leaf node, otherwise `false`.
-    pub fn is_leaf(&self) -> bool {
+    /// 'true' when 'eh_depth == 0'.
+    #[inline]
+    #[must_use]
+    pub const fn is_leaf(&self) -> bool {
         self.eh_depth == 0
     }
 
-    /// Checks if the extent header has a valid magic number for ext4.
-    ///
-    /// # Returns
-    ///
-    /// `true` if the magic number is 0xF30A, indicating a valid ext4 extent header.
-    pub fn is_valid(&self) -> bool {
-        // Typical ext4 extent magic = 0xF30A
+    /// 'true' if 'eh_magic == 0xF30A'.
+    #[inline]
+    #[must_use]
+    pub const fn is_valid(&self) -> bool {
         self.eh_magic == 0xF30A
     }
 }
 
 #[derive(Debug)]
-/// A structure representing an Extent Leaf in an ext4 filesystem.
+/// Leaf‐node entry describing a contiguous range of blocks.
 pub struct ExtentLeaf {
-    /// The block number that this extent begins at.
+    /// First logical block covered by this extent.
     pub ee_block: u32,
-    /// The length of the extent in blocks.
+    /// Length in blocks (`ee_len == 0` means 65 536).
     pub ee_len: u16,
-    /// The physical block number where this extent begins.
+    /// First *physical* block on disk.
     pub ee_start: usize,
 }
 
 impl ExtentLeaf {
-    /// Creates an ExtentLeaf from a slice of bytes.
-    ///
-    /// # Arguments
-    ///
-    /// * `data` - A byte slice from which the ExtentLeaf will be created.
-    ///
-    /// # Returns
-    ///
-    /// An instance of ExtentLeaf filled with values from the byte slice.
+    /// Parse an ['ExtentLeaf'] from 12 bytes.
     pub fn from_bytes(data: &[u8]) -> ExtentLeaf {
         let ee_start_hi = u16::from_le_bytes(data[0x6..0x8].try_into().unwrap()) as u32;
         let ee_start_lo = u32::from_le_bytes(data[0x8..0xC].try_into().unwrap());
@@ -98,14 +79,6 @@ pub struct ExtentIndex {
 
 impl ExtentIndex {
     /// Creates an ExtentIndex from a slice of bytes.
-    ///
-    /// # Arguments
-    ///
-    /// * `data` - A byte slice from which the ExtentIndex will be created.
-    ///
-    /// # Returns
-    ///
-    /// An instance of ExtentIndex filled with values from the byte slice.
     pub fn from_bytes(data: &[u8]) -> Self {
         let ei_block = u32::from_le_bytes(data[0..4].try_into().unwrap());
         let ei_leaf_lo = u32::from_le_bytes(data[4..8].try_into().unwrap());
