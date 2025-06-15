@@ -9,7 +9,7 @@ use std::io::Write;
 
 fn main() {
     let matches = Command::new("exhume_extfs")
-        .version("0.1.5")
+        .version("0.1.6")
         .author("ForensicXlab")
         .about("Exhume artifacts from an EXTFS partition.")
         .arg(
