@@ -5,7 +5,6 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::fmt;
 
 /// “File‐type present in directory entries” incompatibility bit in the super-block.
 pub const INCOMPAT_FILETYPE: u32 = 0x2;
@@ -57,13 +56,12 @@ impl DirEntry {
     pub fn to_json(&self) -> Value {
         serde_json::to_value(self).unwrap_or_else(|_| json!({}))
     }
-}
 
-impl fmt::Display for DirEntry {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.name.is_empty() {
-            true => write!(f, "{} : ? : 0x{:x}", self.inode, self.file_type),
-            false => write!(f, "{} : {} : 0x{:x}", self.inode, self.name, self.file_type),
+    pub fn to_string(&self) -> String {
+        if !self.name.is_empty() {
+            format!("{} :  {} : 0x{:x}", self.inode, self.name, self.file_type)
+        } else {
+            format!("{} :  ? : 0x{:x}", self.inode, self.file_type)
         }
     }
 }
