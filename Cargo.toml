@@ -1,6 +1,6 @@
 [package]
 name = "exhume_extfs"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 description = "Extract Extended Filesystem specific artefacts from a Partition."
 documentation = "https://www.forensicxlab.com/docs/category/exhume---extfs"
@@ -10,7 +10,7 @@ readme = "README.md"
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
-exhume_body = "=0.3.1"
+exhume_body = "=0.3.3"
 
 byteorder = "1.4"
 
