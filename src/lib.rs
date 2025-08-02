@@ -445,6 +445,109 @@ impl<T: Read + Seek> ExtFS<T> {
         Ok(data)
     }
 
+    /// Read a slice of the file represented by `inode`.
+    ///
+    /// * `offset` – first byte you want (defaults to 0).
+    /// * `length` – how many bytes to return.  If it would run past EOF the
+    ///   slice is silently truncated.
+    ///
+    /// Holes / out-of-range blocks are returned as zeroes, exactly like
+    /// `read_inode`.
+    pub fn read_inode_slice(
+        &mut self,
+        inode: &Inode,
+        offset: u64,
+        length: usize,
+    ) -> Result<Vec<u8>, Box<dyn Error>> {
+        let file_size = inode.size();
+
+        // Nothing to do?
+        if offset >= file_size || length == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Clamp the request to the real EOF.
+        let wanted = std::cmp::min(length as u64, file_size - offset) as usize;
+        let mut out = vec![0u8; wanted];
+
+        // Calculate the logical block range we have to touch.
+        let bs = self.superblock.block_size() as u64;
+        let first_lblk = offset / bs;
+        let last_lblk = (offset + wanted as u64 - 1) / bs;
+
+        // Convenience closures ------------------------------------------------
+        let copy_from_block = |dst: &mut [u8], src: &[u8], blk_off: u64| {
+            // blk_off: logical offset (in bytes) of the start of this block
+            let blk_rel_start = if offset > blk_off {
+                offset - blk_off
+            } else {
+                0
+            };
+            let dst_off = (blk_off + blk_rel_start - offset) as usize;
+            let copy_len = std::cmp::min(src.len() - blk_rel_start as usize, dst.len() - dst_off);
+            dst[dst_off..dst_off + copy_len]
+                .copy_from_slice(&src[blk_rel_start as usize..blk_rel_start as usize + copy_len]);
+        };
+
+        // ---------------------------------------------------------------------
+        // 1. Extent-based files (typical modern ext4)
+        // ---------------------------------------------------------------------
+        let uses_extents = (inode.flag() & EXT4_EXTENTS_FL) != 0
+            || (self.superblock.feature_incompat() & INCOMPAT_EXTENTS) != 0;
+
+        if uses_extents {
+            for (lb_start, pb_start, len) in self.parse_extents(inode)? {
+                let lb_end = lb_start + len - 1;
+                if lb_end < first_lblk || lb_start > last_lblk {
+                    continue; // no overlap with requested range
+                }
+
+                // Overlap range in logical blocks
+                let range_first = std::cmp::max(lb_start, first_lblk);
+                let range_last = std::cmp::min(lb_end, last_lblk);
+
+                for lblk in range_first..=range_last {
+                    let phys = pb_start + (lblk - lb_start);
+                    if phys == 0 || phys >= self.superblock.blocks_count() {
+                        continue; // sparse hole
+                    }
+                    let blk_buf = self.read_block(phys)?;
+                    let blk_off = lblk * bs;
+                    copy_from_block(&mut out, &blk_buf, blk_off);
+                }
+            }
+            return Ok(out);
+        }
+
+        // ---------------------------------------------------------------------
+        // 2. Old-style direct + indirect block layout (ext2/3)
+        // ---------------------------------------------------------------------
+        let blocks = self.collect_old_style_blocks(inode)?;
+        for (i, &phys) in blocks.iter().enumerate() {
+            let lblk = i as u64;
+            if lblk < first_lblk || lblk > last_lblk {
+                continue;
+            }
+            if phys == 0 || phys >= self.superblock.blocks_count() {
+                continue; // sparse
+            }
+            let blk_buf = self.read_block(phys)?;
+            let blk_off = lblk * bs;
+            copy_from_block(&mut out, &blk_buf, blk_off);
+        }
+
+        Ok(out)
+    }
+
+    /// Convenience wrapper: read the *first* `length` bytes of the file.
+    pub fn read_inode_prefix(
+        &mut self,
+        inode: &Inode,
+        length: usize,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        self.read_inode_slice(inode, 0, length)
+    }
+
     /// List the directory entries for a directory inode.
     pub fn list_dir(&mut self, inode: &Inode) -> Result<Vec<DirEntry>, Box<dyn Error>> {
         if !inode.is_dir() {
