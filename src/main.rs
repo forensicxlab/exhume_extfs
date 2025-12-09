@@ -1,4 +1,4 @@
-use clap::{value_parser, Arg, ArgAction, Command};
+use clap::*;
 use clap_num::maybe_hex;
 use exhume_body::{Body, BodySlice};
 use exhume_extfs::ExtFS;
@@ -9,8 +9,8 @@ use std::io::Write;
 
 fn main() {
     let matches = Command::new("exhume_extfs")
-        .version("0.1.9")
-        .author("ForensicXlab")
+        .version(crate_version!())
+        .author(crate_authors!())
         .about("Exhume artifacts from an EXTFS partition.")
         .arg(
             Arg::new("body")
