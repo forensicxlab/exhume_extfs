@@ -14,7 +14,7 @@ use direntry::DirEntry;
 use extent::{ExtentHeader, ExtentIndex, ExtentLeaf};
 use groupdescriptor::GroupDescriptor;
 use inode::{mode_to_string, Inode};
-use log::{error, info};
+use log::{error, info, warn};
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -905,6 +905,10 @@ impl<T: Read + Seek> ExtFS<T> {
                 let mut data_blocks = Vec::new();
                 for (ofs, tag) in desc.tags.iter().enumerate() {
                     let jofs = (idx + 1 + ofs) * jblk_sz;
+                    if jofs + jblk_sz > jbytes.len() {
+                        warn!("A descriptor tag references a data block that lies past the logical end of the journal buffer.");
+                        continue;
+                    }
                     data_blocks.push((tag.blocknr as u64, &jbytes[jofs..jofs + jblk_sz]));
                 }
                 // commit block follows right after the data blocks
