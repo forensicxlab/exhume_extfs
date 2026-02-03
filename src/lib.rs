@@ -905,7 +905,7 @@ impl<T: Read + Seek> ExtFS<T> {
                 let mut data_blocks = Vec::new();
                 for (ofs, tag) in desc.tags.iter().enumerate() {
                     let jofs = (idx + 1 + ofs) * jblk_sz;
-                    if jofs + jblk_sz > jbytes.len() {
+                    if jofs >= jbytes.len() || jofs + jblk_sz > jbytes.len() {
                         warn!("A descriptor tag references a data block that lies past the logical end of the journal buffer.");
                         continue;
                     }
