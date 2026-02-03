@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 
 /// 0xC03B_3998 in big-endian
 pub const JBD2_MAGIC: u32 = 0xC03B_3998;
+const JBD2_FLAG_SAME_UUID: u16 = 0x0002;
+const JBD2_FLAG_DELETED: u16 = 0x0004;
+const JBD2_FLAG_LAST_TAG: u16 = 0x0008;
 
 /// Helper to read BE numbers -------------------------------------------------
 #[inline(always)]
@@ -181,32 +184,39 @@ pub struct JournalBlockTag {
 }
 
 impl JournalBlockTag {
-    /// Returns (tag, bytes_read)
-    fn parse(data: &[u8], has_64bit: bool, previous_had_same_uuid: bool) -> (Self, usize) {
-        let blocknr = be_u32(data, 0) as u64;
-        let checksum_or_flags = be_u16(data, 4);
+    fn parse(data: &[u8], has_64bit: bool) -> Option<(Self, usize)> {
+        if data.len() < 8 {
+            return None;
+        }
+
+        let blocknr_lo = be_u32(data, 0) as u64;
+        let checksum16 = be_u16(data, 4) as u32;
         let flags = be_u16(data, 6);
 
         let mut consumed = 8;
 
         let (blocknr, checksum) = if has_64bit {
-            // 64-bit block number, 32-bit checksum after flags
+            if data.len() < 16 {
+                return None;
+            }
             let high = be_u32(data, 8) as u64;
-            consumed += 4;
-            let checksum = be_u32(data, 12);
-            consumed += 4;
-            ((high << 32) | blocknr, checksum)
+            let checksum32 = be_u32(data, 12);
+            consumed += 8;
+            ((high << 32) | blocknr_lo, checksum32)
         } else {
-            (blocknr, checksum_or_flags as u32)
+            (blocknr_lo, checksum16)
         };
 
-        // Optional UUID (16 bytes) if SAME_UUID flag *not* set
-        let has_uuid = (flags & 0x2) == 0 && !previous_had_same_uuid;
+        // UUID is present iff SAME_UUID is NOT set.
+        let has_uuid = (flags & JBD2_FLAG_SAME_UUID) == 0;
         if has_uuid {
+            if data.len() < consumed + 16 {
+                return None;
+            }
             consumed += 16;
         }
 
-        (
+        Some((
             Self {
                 blocknr,
                 checksum,
@@ -214,7 +224,18 @@ impl JournalBlockTag {
                 has_uuid,
             },
             consumed,
-        )
+        ))
+    }
+
+    #[inline]
+    pub fn has_data_payload(&self) -> bool {
+        // If DELETED is set, no data block follows for this tag.
+        (self.flags & JBD2_FLAG_DELETED) == 0
+    }
+
+    #[inline]
+    pub fn is_last(&self) -> bool {
+        (self.flags & JBD2_FLAG_LAST_TAG) != 0
     }
 }
 
@@ -226,21 +247,18 @@ pub struct JournalDescriptorBlock {
 
 impl JournalDescriptorBlock {
     pub fn from_bytes(data: &[u8], has_64bit: bool) -> Self {
-        debug!("Parsing JBD2 descriptor block.");
         let header = JournalBlockHeader::from_bytes(data);
-        let mut offset = 12; // first tag after common header
+        let mut offset = 12;
         let mut tags = Vec::new();
-        let mut previous_tag_had_same_uuid = false;
 
-        while offset + 8 <= data.len() {
-            let (tag, len) =
-                JournalBlockTag::parse(&data[offset..], has_64bit, previous_tag_had_same_uuid);
-            previous_tag_had_same_uuid = !tag.has_uuid;
+        while offset < data.len() {
+            let Some((tag, len)) = JournalBlockTag::parse(&data[offset..], has_64bit) else {
+                break;
+            };
             offset += len;
-            tags.push(tag.clone());
+            tags.push(tag);
 
-            // last-tag flag means we can stop early
-            if tag.flags & 0x8 != 0 {
+            if tags.last().unwrap().is_last() {
                 break;
             }
         }

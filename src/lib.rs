@@ -22,7 +22,7 @@ use superblock::{Superblock, EXT4_FEATURE_INCOMPAT_64BIT};
 
 use journal::{
     JournalBlockHeader, JournalBlockType, JournalCommitBlock, JournalDescriptorBlock,
-    JournalSuperblock,
+    JournalSuperblock, JBD2_MAGIC,
 };
 
 const INCOMPAT_EXTENTS: u32 = 0x40;
@@ -897,25 +897,43 @@ impl<T: Read + Seek> ExtFS<T> {
         let mut idx = 0;
         while idx * jblk_sz < jbytes.len() {
             let hdr = JournalBlockHeader::from_bytes(&jbytes[idx * jblk_sz..]);
+            if hdr.h_magic != JBD2_MAGIC {
+                idx += 1;
+                continue;
+            }
 
             if hdr.h_blocktype == JournalBlockType::Descriptor {
                 // Collect the whole Tx (tags + data + commit)
                 let desc =
                     JournalDescriptorBlock::from_bytes(&jbytes[idx * jblk_sz..], jsb.has_64bit());
                 let mut data_blocks = Vec::new();
-                for (ofs, tag) in desc.tags.iter().enumerate() {
-                    let jofs = (idx + 1 + ofs) * jblk_sz;
-                    if jofs >= jbytes.len() || jofs + jblk_sz > jbytes.len() {
-                        warn!("A descriptor tag references a data block that lies past the logical end of the journal buffer.");
-                        continue;
+                let mut cursor = idx + 1;
+                for tag in &desc.tags {
+                    if !tag.has_data_payload() {
+                        continue; // no data block stored for this tag
+                    }
+                    let jofs = cursor * jblk_sz;
+                    cursor += 1;
+
+                    if jofs + jblk_sz > jbytes.len() {
+                        warn!("data block past end of journal buffer");
+                        break;
                     }
                     data_blocks.push((tag.blocknr as u64, &jbytes[jofs..jofs + jblk_sz]));
                 }
-                // commit block follows right after the data blocks
-                let com_idx = idx + 1 + desc.tags.len();
-                let com_hdr = JournalCommitBlock::from_bytes(
-                    &jbytes[com_idx * jblk_sz..com_idx * jblk_sz + jblk_sz],
-                );
+
+                // commit block is right after the payload blocks we actually consumed
+                let com_idx = cursor;
+                let com_off = com_idx * jblk_sz;
+                if com_off + jblk_sz > jbytes.len() {
+                    warn!(
+                        "commit block past end (likely wrap-around); skipping tx or implement wrap"
+                    );
+                    idx += 1;
+                    continue;
+                }
+                let com_hdr = JournalCommitBlock::from_bytes(&jbytes[com_off..com_off + jblk_sz]);
+                idx = com_idx + 1;
 
                 // For every data block that is part of an inode table.
                 for (phys_bn, buf) in data_blocks {
