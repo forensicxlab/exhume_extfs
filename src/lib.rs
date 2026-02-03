@@ -933,7 +933,6 @@ impl<T: Read + Seek> ExtFS<T> {
                     continue;
                 }
                 let com_hdr = JournalCommitBlock::from_bytes(&jbytes[com_off..com_off + jblk_sz]);
-                idx = com_idx + 1;
 
                 // For every data block that is part of an inode table.
                 for (phys_bn, buf) in data_blocks {
