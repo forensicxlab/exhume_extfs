@@ -61,7 +61,7 @@ pub struct Superblock {
 impl Superblock {
     pub fn from_bytes(data: &[u8]) -> Result<Self, String> {
         if data.len() < 0x400 {
-            return Err("Not enough bytes to parse superblock".to_string());
+            return Err("Not enough bytes to parse superblock".into());
         }
         let le_u16 = |offset: usize| -> u16 {
             u16::from_le_bytes(data[offset..offset + 2].try_into().unwrap())
@@ -87,7 +87,7 @@ impl Superblock {
         let s_max_mnt_count = le_u16(0x36);
         let s_magic = le_u16(0x38);
         if s_magic != EXT_MAGIC {
-            return Err("Invalid FileSystem".to_string());
+            return Err("Invalid FileSystem".into());
         }
         let s_state = le_u16(0x3A);
         let s_errors = le_u16(0x3C);
@@ -131,7 +131,7 @@ impl Superblock {
 
         let s_journaling = if (s_feature_compat & EXT4_FEATURE_COMPAT_HAS_JOURNAL) != 0 {
             info!("Extended FileSystem Journaling feature is on.");
-            Some(Journaling::from_bytes(&data))
+            Some(Journaling::from_bytes(data))
         } else {
             warn!("Journaling feature is not available.");
             None
@@ -221,8 +221,10 @@ impl Superblock {
             .collect::<Vec<_>>()
             .join("-")
     }
+}
 
-    pub fn to_string(&self) -> String {
+impl std::fmt::Display for Superblock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut table = Table::new();
 
         // Adding rows to the table
@@ -368,11 +370,11 @@ impl Superblock {
         ]));
         table.add_row(Row::new(vec![
             Cell::new("Volume Name"),
-            Cell::new(&String::from_utf8_lossy(&self.s_volume_name).to_string()),
+            Cell::new(String::from_utf8_lossy(&self.s_volume_name).as_ref()),
         ]));
         table.add_row(Row::new(vec![
             Cell::new("Last Mounted"),
-            Cell::new(&String::from_utf8_lossy(&self.s_last_mounted).to_string()),
+            Cell::new(String::from_utf8_lossy(&self.s_last_mounted).as_ref()),
         ]));
         table.add_row(Row::new(vec![
             Cell::new("Algorithm Usage Bitmap"),
@@ -450,6 +452,6 @@ impl Superblock {
                 )),
             ]));
         }
-        table.to_string()
+        write!(f, "{}", table)
     }
 }

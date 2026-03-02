@@ -48,7 +48,7 @@ impl DirEntry {
             inode: u32::from_le_bytes(data[0..4].try_into().unwrap()),
             rec_len: u16::from_le_bytes(data[4..6].try_into().unwrap()),
             file_type,
-            name: String::from_utf8_lossy(&data[8..8 + name_len]).to_string(),
+            name: String::from_utf8_lossy(&data[8..8 + name_len]).into_owned(),
         }
     }
 
@@ -57,11 +57,14 @@ impl DirEntry {
         serde_json::to_value(self).unwrap_or_else(|_| json!({}))
     }
 
-    pub fn to_string(&self) -> String {
+}
+
+impl std::fmt::Display for DirEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if !self.name.is_empty() {
-            format!("{} :  {} : 0x{:x}", self.inode, self.name, self.file_type)
+            write!(f, "{} :  {} : 0x{:x}", self.inode, self.name, self.file_type)
         } else {
-            format!("{} :  ? : 0x{:x}", self.inode, self.file_type)
+            write!(f, "{} :  ? : 0x{:x}", self.inode, self.file_type)
         }
     }
 }

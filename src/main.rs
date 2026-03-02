@@ -136,11 +136,11 @@ fn main() {
     let recover_deleted = matches.get_flag("recover");
 
     // 1) Prepare the "body" and create an ExtFS instance.
-    let mut body = Body::new(file_path.to_owned(), format);
+    let body = Body::new(file_path.to_owned(), format);
     debug!("Created Body from '{}'", file_path);
 
     let partition_size = *size * body.get_sector_size() as u64;
-    let mut slice = match BodySlice::new(&mut body, *offset, partition_size) {
+    let mut slice = match BodySlice::new(&body, *offset, partition_size) {
         Ok(sl) => sl,
         Err(e) => {
             error!("Could not create BodySlice: {}", e);
@@ -163,7 +163,7 @@ fn main() {
                 Err(e) => error!("Error serializing superblock to JSON: {}", e),
             }
         } else {
-            println!("{}", filesystem.superblock.to_string());
+            println!("{}", filesystem.superblock);
         }
     }
 
@@ -242,18 +242,16 @@ fn main() {
                     inode_num
                 );
             }
-        } else {
-            if json_output {
-                match serde_json::to_string_pretty(&inode.to_json()) {
-                    Ok(json_str) => {
-                        info!("Inode {} metadata:", inode_num);
-                        println!("{}", json_str)
-                    }
-                    Err(e) => error!("Error serializing inode {} to JSON: {}", inode_num, e),
+        } else if json_output {
+            match serde_json::to_string_pretty(&inode.to_json()) {
+                Ok(json_str) => {
+                    info!("Inode {} metadata:", inode_num);
+                    println!("{}", json_str)
                 }
-            } else {
-                println!("{}", inode.to_string());
+                Err(e) => error!("Error serializing inode {} to JSON: {}", inode_num, e),
             }
+        } else {
+            println!("{}", inode);
         }
 
         if dump_content {

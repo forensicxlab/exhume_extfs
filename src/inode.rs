@@ -161,8 +161,8 @@ impl Inode {
         let i_flags = le_u32(0x20);
 
         let mut i_block = [0u32; 15];
-        for i in 0..15 {
-            i_block[i] = le_u32(0x28 + i * 4);
+        for (i, p) in i_block.iter_mut().enumerate() {
+            *p = le_u32(0x28 + i * 4);
         }
 
         // Some fields exist after offset 128 only if inode_size >= 256 (ext4)
@@ -299,8 +299,11 @@ impl Inode {
         serde_json::to_value(self).unwrap_or_else(|_| json!({}))
     }
 
-    /// String representation of an Inode using prettytable
-    pub fn to_string(&self) -> String {
+    // String representation of an Inode using prettytable-
+}
+
+impl std::fmt::Display for Inode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut inode_table = Table::new();
 
         inode_table.add_row(Row::new(vec![
@@ -424,6 +427,6 @@ impl Inode {
             Cell::new("crtime_extra"),
             Cell::new(&format!("0x{:x}", self.i_crtime_extra)),
         ]));
-        inode_table.to_string()
+        write!(f, "{}", inode_table)
     }
 }

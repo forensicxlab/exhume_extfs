@@ -25,6 +25,8 @@ use journal::{
     JournalSuperblock, JBD2_MAGIC,
 };
 
+type ExtentInfo = (u64, u64, u64);
+
 const INCOMPAT_EXTENTS: u32 = 0x40;
 const EXT4_EXTENTS_FL: u32 = 0x00080000;
 const EXT4_INLINE_DATA_FL: u32 = 0x10000000;
@@ -93,7 +95,7 @@ impl<T: Read + Seek> ExtFS<T> {
     }
 
     pub fn total_inodes(&self) -> u64 {
-        self.superblock.s_inodes_count as u64
+        self.superblock.s_inodes_count
     }
 
     /// Returns the offset where group descriptors start based on block size.
@@ -114,7 +116,7 @@ impl<T: Read + Seek> ExtFS<T> {
         group_index: u64,
     ) -> Result<GroupDescriptor, Box<dyn Error>> {
         let desc_size = self.descriptor_size();
-        let offset = self.bg_desc_offset() + (group_index as u64) * (desc_size as u64);
+        let offset = self.bg_desc_offset() + group_index * (desc_size as u64);
 
         // Seek and read desc_size bytes
         self.body.seek(SeekFrom::Start(offset))?;
@@ -139,7 +141,7 @@ impl<T: Read + Seek> ExtFS<T> {
         // Read the group descriptor
         let gd = self.read_group_descriptor(group_index)?;
         let inode_table_block = gd.bg_inode_table();
-        let inode_table_offset = (inode_table_block as u64) * self.superblock.block_size()
+        let inode_table_offset = inode_table_block * self.superblock.block_size()
             + (index_within_group * (self.superblock.inode_size() as u64));
 
         // Read the inode data (128 or 256+ bytes, depending on FS settings)
@@ -182,7 +184,7 @@ impl<T: Read + Seek> ExtFS<T> {
     }
 
     /// Parse extents to collect all runs as (logical_block, physical_block, length).
-    fn parse_extents(&mut self, inode: &Inode) -> Result<Vec<(u64, u64, u64)>, Box<dyn Error>> {
+    fn parse_extents(&mut self, inode: &Inode) -> Result<Vec<ExtentInfo>, Box<dyn Error>> {
         // The first 12 bytes of i_block contain the ExtentHeader if extents are used
         let mut raw_header = [0u8; 12];
         // copy from i_block into raw_header
@@ -206,7 +208,7 @@ impl<T: Read + Seek> ExtFS<T> {
         fn parse_extent_node<T: Read + Seek>(
             fs: &mut ExtFS<T>,
             block_num: u64,
-            depth: u16,
+            _depth: u16,
         ) -> Result<Vec<ExtentLeaf>, Box<dyn Error>> {
             let block_data = fs.read_block(block_num)?;
             let header = ExtentHeader::from_bytes(&block_data[0..8]);
@@ -231,7 +233,7 @@ impl<T: Read + Seek> ExtFS<T> {
                 for _ in 0..entries {
                     let idx = ExtentIndex::from_bytes(&block_data[offset..offset + 12]);
                     offset += 12;
-                    let child_leaves = parse_extent_node(fs, idx.leaf(), depth - 1)?;
+                    let child_leaves = parse_extent_node(fs, idx.leaf(), _depth - 1)?;
                     leaves.extend(child_leaves);
                 }
             }
@@ -361,8 +363,7 @@ impl<T: Read + Seek> ExtFS<T> {
             // In Classic ext2/3/4, if the symlink is short enough to fit in i_block, the data is there:
             if sz < 60 {
                 // Copy the raw bytes out of i_block
-                let mut symlink_data = Vec::new();
-                symlink_data.resize(sz, 0u8);
+                let mut symlink_data = vec![0; sz];
                 let i_block_as_bytes = {
                     let mut tmp = vec![0u8; 60];
                     for (i, &blk) in inode.block_pointers().iter().enumerate() {
@@ -378,8 +379,7 @@ impl<T: Read + Seek> ExtFS<T> {
         // Corner case #2: Inline data
         if (inode.flag() & EXT4_INLINE_DATA_FL) != 0 {
             let inline_sz = std::cmp::min(60, inode.size() as usize);
-            let mut inline_data = Vec::new();
-            inline_data.resize(inline_sz, 0);
+            let mut inline_data = vec![0; inline_sz];
             let i_block_as_bytes = {
                 let mut tmp = vec![0u8; 60];
                 for (i, &blk) in inode.block_pointers().iter().enumerate() {
@@ -471,18 +471,14 @@ impl<T: Read + Seek> ExtFS<T> {
         let mut out = vec![0u8; wanted];
 
         // Calculate the logical block range we have to touch.
-        let bs = self.superblock.block_size() as u64;
+        let bs = self.superblock.block_size();
         let first_lblk = offset / bs;
         let last_lblk = (offset + wanted as u64 - 1) / bs;
 
         // Convenience closures ------------------------------------------------
         let copy_from_block = |dst: &mut [u8], src: &[u8], blk_off: u64| {
             // blk_off: logical offset (in bytes) of the start of this block
-            let blk_rel_start = if offset > blk_off {
-                offset - blk_off
-            } else {
-                0
-            };
+            let blk_rel_start = offset.saturating_sub(blk_off);
             let dst_off = (blk_off + blk_rel_start - offset) as usize;
             let copy_len = std::cmp::min(src.len() - blk_rel_start as usize, dst.len() - dst_off);
             dst[dst_off..dst_off + copy_len]
@@ -724,7 +720,7 @@ impl<T: Read + Seek> ExtFS<T> {
     /// Total number of block / inode groups in this FS.
     fn group_count(&self) -> u64 {
         let ipg = self.superblock.inodes_per_group() as u64;
-        (self.superblock.s_inodes_count + ipg - 1) / ipg
+        self.superblock.s_inodes_count.div_ceil(ipg)
     }
 
     /// Read the raw inode bitmap for a given group.
@@ -764,7 +760,7 @@ impl<T: Read + Seek> ExtFS<T> {
                 }
                 index
                     .entry(de.inode as u64)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(de.name);
             }
         }
@@ -775,7 +771,7 @@ impl<T: Read + Seek> ExtFS<T> {
     /// but whose on‑disk inode satisfies inode_looks_promising.
     pub fn collect_promising_free_inodes(&mut self) -> Result<Vec<u64>, Box<dyn Error>> {
         let mut victims = Vec::new();
-        let ipg = self.superblock.inodes_per_group() as usize;
+        let ipg = self.superblock.inodes_per_group();
         for grp_idx in 0..self.group_count() {
             let bitmap = self.read_inode_bitmap(grp_idx)?;
             for local_idx in 0..ipg {
@@ -919,7 +915,7 @@ impl<T: Read + Seek> ExtFS<T> {
                         warn!("data block past end of journal buffer");
                         break;
                     }
-                    data_blocks.push((tag.blocknr as u64, &jbytes[jofs..jofs + jblk_sz]));
+                    data_blocks.push((tag.blocknr, &jbytes[jofs..jofs + jblk_sz]));
                 }
 
                 // commit block is right after the payload blocks we actually consumed
