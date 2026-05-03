@@ -27,7 +27,6 @@ use journal::{
 
 type ExtentInfo = (u64, u64, u64);
 
-const INCOMPAT_EXTENTS: u32 = 0x40;
 const EXT4_EXTENTS_FL: u32 = 0x00080000;
 const EXT4_INLINE_DATA_FL: u32 = 0x10000000;
 
@@ -395,9 +394,7 @@ impl<T: Read + Seek> ExtFS<T> {
         let file_size = inode.size() as usize;
         let mut data = vec![0u8; file_size]; // pre-zeroed (covers sparse blocks)
 
-        // Check if extents are used:
-        let uses_extents = (inode.flag() & EXT4_EXTENTS_FL) != 0
-            || (self.superblock.feature_incompat() & INCOMPAT_EXTENTS) != 0;
+        let uses_extents = (inode.flag() & EXT4_EXTENTS_FL) != 0;
 
         if uses_extents {
             // For ext4 with extents, parse them.
@@ -488,8 +485,7 @@ impl<T: Read + Seek> ExtFS<T> {
         // ---------------------------------------------------------------------
         // 1. Extent-based files (typical modern ext4)
         // ---------------------------------------------------------------------
-        let uses_extents = (inode.flag() & EXT4_EXTENTS_FL) != 0
-            || (self.superblock.feature_incompat() & INCOMPAT_EXTENTS) != 0;
+        let uses_extents = (inode.flag() & EXT4_EXTENTS_FL) != 0;
 
         if uses_extents {
             for (lb_start, pb_start, len) in self.parse_extents(inode)? {
