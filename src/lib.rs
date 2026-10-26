@@ -754,10 +754,7 @@ impl<T: Read + Seek> ExtFS<T> {
                 if de.inode == 0 {
                     continue;
                 }
-                index
-                    .entry(de.inode as u64)
-                    .or_default()
-                    .push(de.name);
+                index.entry(de.inode as u64).or_default().push(de.name);
             }
         }
         Ok(index)

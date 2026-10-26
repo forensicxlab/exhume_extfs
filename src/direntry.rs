@@ -56,13 +56,16 @@ impl DirEntry {
     pub fn to_json(&self) -> Value {
         serde_json::to_value(self).unwrap_or_else(|_| json!({}))
     }
-
 }
 
 impl std::fmt::Display for DirEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if !self.name.is_empty() {
-            write!(f, "{} :  {} : 0x{:x}", self.inode, self.name, self.file_type)
+            write!(
+                f,
+                "{} :  {} : 0x{:x}",
+                self.inode, self.name, self.file_type
+            )
         } else {
             write!(f, "{} :  ? : 0x{:x}", self.inode, self.file_type)
         }

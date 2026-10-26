@@ -110,7 +110,8 @@ impl GroupDescriptor {
         sb: &crate::superblock::Superblock,
     ) -> (u64 /*first*/, u64 /*last-inclusive*/) {
         let first = self.bg_inode_table();
-        let blks = (sb.inodes_per_group() as u64 * sb.inode_size() as u64).div_ceil(sb.block_size());
+        let blks =
+            (sb.inodes_per_group() as u64 * sb.inode_size() as u64).div_ceil(sb.block_size());
         (first, first + blks - 1)
     }
 
